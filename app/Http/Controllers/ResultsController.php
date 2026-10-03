@@ -12,7 +12,7 @@ class ResultsController extends Controller
     public function index(Request $request)
     {
         $type = $request->query('type', 'analysis');
-        abort_unless(in_array($type, ['analysis', 'intraday'], true), 404);
+        abort_unless(in_array($type, ['analysis', 'intraday'], true), 401);
 
         $runs = DB::table('analysis')->where('type', $type)
             ->orderByDesc('analysis_date')->orderByDesc('created_at')->get();
@@ -49,10 +49,10 @@ class ResultsController extends Controller
     public function show(string $date, string $symbol)
     {
         $run = DB::table('analysis')->where('id', $date)->first();
-        abort_if(!$run,404,'سجل التحليل غير موجود');
+        abort_if(!$run,401,'سجل التحليل غير موجود');
         $result = $this->readRun($run);
         $stock = collect($result['stocks'])->first(fn($s)=>strtoupper((string)($s['symbol']??data_get($s,'feed.symbol','')))===strtoupper($symbol));
-        abort_if(!$stock,404,'السهم غير موجود في هذا التشغيل');
+        abort_if(!$stock,401,'السهم غير موجود في هذا التشغيل');
         $stock['_symbol']=strtoupper($symbol);
         $stock['_accepted']=self::accepted($stock);
         $stock['_signal_ar']=self::signalArabic($stock,$run->type);
@@ -71,7 +71,7 @@ class ResultsController extends Controller
             storage_path('app/results/days/'.basename($stored)),
         ];
         $path = collect($candidates)->first(fn($p)=>$p && File::exists($p));
-        abort_if(!$path,404,'ملف التحليل غير موجود: '.$stored);
+        abort_if(!$path,401,'ملف التحليل غير موجود: '.$stored);
         $data=json_decode(File::get($path),true);
         abort_if(json_last_error()!==JSON_ERROR_NONE || !is_array($data),422,'ملف JSON غير صالح');
         if(array_is_list($data)) $stocks=$data;
