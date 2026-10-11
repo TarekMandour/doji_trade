@@ -74,6 +74,44 @@ class IntradayMultiTimeframeService
     private const VOLUME_PERIOD = 20;
     private const MIN_RVOL = 1.05;
 
+    /** Trade-quality gates. Set ROUND_TRIP_COST_PCT to your real broker + EGX fees. */
+    private const ROUND_TRIP_COST_PCT = 0.35;
+    private const MIN_NET_PROFIT_PCT = 0.8;
+    /** Minimum NET reward/risk (after costs). Gross targets are TARGET1_R / TARGET2_R times the risk. */
+    private const MIN_NET_RR = 1.2;
+    private const TARGET1_R = 2.0;
+    private const TARGET2_R = 3.0;
+
+    /** Overextension filter (do not buy the exact top of a stretched move). */
+    private const MAX_ENTRY_RSI = 75;            // entry timeframe RSI at/above this = overbought
+    private const MAX_VWAP_EXTENSION_ATR = 3.0;  // price further than N x ATR above VWAP = stretched
+    private const NEAR_HIGH_PCT = 0.2;           // "at the session high" = within this % of it
+    private const NEAR_HIGH_RSI = 70;            // chasing rule: RSI at/above this ...
+    private const NEAR_HIGH_STOCH = 90;          // ... and stochastic at/above this
+    private const MIN_STOP_DISTANCE_PCT = 0.3;
+
+    /** Reject signals when the latest 5m candle is older than this (market closed / stale data). */
+    private const MAX_STALE_SECONDS = 1200;
+
+    /**
+     * false = the engine runs any time. Outside market hours it analyses the last finished
+     * session and flags the result (data_mode = LAST_SESSION, stale_data = true).
+     * true  = outside market hours every stock is rejected with STALE_INTRADAY_DATA.
+     */
+    private const ENFORCE_FRESHNESS = false;
+
+    /**
+     * EGX closing-auction bars distort volume, RVOL and ATR. Intraday candles at or after this
+     * local time (app timezone) are dropped. Verify against your raw 5m timestamps.
+     */
+    private const SESSION_CUTOFF = '14:20';
+
+    /** EGX local time. Fixed on purpose: app.timezone may be UTC, which breaks the session cutoff and VWAP session reset. */
+    private const MARKET_TZ = 'Africa/Cairo';
+
+    /** Entry timeframes (1m is analysed but is too noisy to be used for entries). */
+    private const ENTRY_TIMEFRAMES = ['15m', '5m'];
+
     public function __construct(private readonly ThndrApi $api) {}
 
     /**
@@ -93,6 +131,11 @@ class IntradayMultiTimeframeService
         $stocks = $this->loadSelectedStocks($assetIds);
 
         foreach ($stocks as &$stock) {
+            // Stocks already marked ERROR (not in marketwatch / marketwatch failed) must keep their reason.
+            if (($stock['status'] ?? null) === 'ERROR') {
+                continue;
+            }
+
             try {
                 $stock = $this->analyzeStock($stock);
             } catch (\Throwable $e) {
@@ -118,7 +161,21 @@ class IntradayMultiTimeframeService
      */
     private function loadSelectedStocks(array $assetIds): array
     {
-        $marketWatch = $this->api->fetchMarketWatch() ?? [];
+        $marketWatchRaw = $this->api->fetchMarketWatch();
+
+        if ($marketWatchRaw === null) {
+            Log::error('Intraday: Thndr marketwatch request failed - token expired or API blocked');
+
+            return array_map(fn ($id) => [
+                'asset_id' => $id,
+                'symbol' => null,
+                'status' => 'ERROR',
+                'signal' => 'NONE',
+                'reason' => 'MARKETWATCH_REQUEST_FAILED_CHECK_THNDR_TOKEN',
+            ], $assetIds);
+        }
+
+        $marketWatch = $marketWatchRaw;
         $marketAssets = [];
 
         foreach ($marketWatch['assets'] ?? [] as $asset) {
@@ -217,6 +274,8 @@ class IntradayMultiTimeframeService
 
         // Incomplete timeframe data must not produce a partial analysis.
         // If any required timeframe has insufficient candles, reject the stock.
+        $totalCandles = array_sum(array_map(fn ($t) => (int) ($t['candles_count'] ?? 0), $timeframes));
+
         if ($errors !== []) {
             $stock['status'] = 'REJECTED';
             $stock['signal'] = 'NONE';
@@ -234,21 +293,49 @@ class IntradayMultiTimeframeService
             $stock['strategies'] = [];
             $stock['timeframes'] = $timeframes;
             $stock['data_errors'] = $errors;
-            $stock['reason'] = 'INSUFFICIENT_TIMEFRAME_DATA';
+            $stock['reason'] = $totalCandles === 0
+                ? 'NO_CANDLES_RETURNED_CHECK_THNDR_TOKEN_OR_API'
+                : 'INSUFFICIENT_TIMEFRAME_DATA';
 
             return $stock;
         }
 
         $hierarchy = $this->buildHierarchy($timeframes);
+
+        $lastTs = (int) ($timeframes['5m']['last_timestamp'] ?? 0);
+        $isStale = $lastTs <= 0 || (time() - $lastTs) > self::MAX_STALE_SECONDS;
+        $blockStale = $isStale && self::ENFORCE_FRESHNESS;
+
         $strategies = $this->evaluateStrategies($timeframes, $hierarchy);
-        $signals = array_values(array_filter($strategies, fn (array $s) => $s['signal'] === 'BUY'));
+        $signals = $blockStale
+            ? []
+            : $this->sortSignals(array_values(array_filter(
+                $strategies,
+                fn (array $s) => $s['signal'] === 'BUY'
+            )));
 
-        $selected = $this->selectBestSignal($signals);
-        $trade = $selected !== null
-            ? $this->buildTradePlan($selected, $timeframes, $hierarchy)
-            : null;
+        // A signal is accepted only if its trade plan passes the profit / R:R gates.
+        $selected = null;
+        $trade = null;
+        $rejects = [];
 
-        $stock['status'] = $selected !== null ? 'QUALIFIED' : 'NO_SIGNAL';
+        foreach ($signals as $sig) {
+            $plan = $this->buildTradePlan($sig, $timeframes, $hierarchy);
+
+            if ($plan['valid']) {
+                $selected = $sig;
+                $trade = $plan;
+                break;
+            }
+
+            $rejects[] = $sig['strategy'] . ':' . $plan['reject_reason'];
+        }
+
+        $stock['stale_data'] = $isStale;
+        $stock['data_mode'] = $isStale ? 'LAST_SESSION' : 'LIVE';
+        $stock['last_candle_at'] = $lastTs > 0 ? gmdate('Y-m-d H:i', $lastTs).' UTC' : null;
+        // WATCHLIST = a strategy fired but the trade plan failed the profit / R:R / resistance gates.
+        $stock['status'] = $selected !== null ? 'QUALIFIED' : ($rejects !== [] && ! $blockStale ? 'WATCHLIST' : 'NO_SIGNAL');
         $stock['signal'] = $selected['signal'] ?? 'NONE';
         $stock['strategy'] = $selected['strategy'] ?? null;
         $stock['entry_timeframe'] = $selected['timeframe'] ?? null;
@@ -260,11 +347,15 @@ class IntradayMultiTimeframeService
         $stock['target_2'] = $trade['target_2'] ?? null;
         $stock['risk_reward_t1'] = $trade['risk_reward_t1'] ?? null;
         $stock['risk_reward_t2'] = $trade['risk_reward_t2'] ?? null;
+        $stock['net_profit_pct_t1'] = $trade['net_profit_pct_t1'] ?? null;
         $stock['hierarchy'] = $hierarchy;
         $stock['strategies'] = $strategies;
         $stock['timeframes'] = $timeframes;
         $stock['data_errors'] = $errors;
-        $stock['reason'] = $selected['reason'] ?? ($errors === [] ? 'NO_STRATEGY_CONFIRMED' : 'MISSING_TIMEFRAME_DATA');
+        $stock['reason'] = $selected['reason']
+            ?? ($blockStale
+                ? 'STALE_INTRADAY_DATA'
+                : ($rejects !== [] ? implode(' | ', $rejects) : 'NO_STRATEGY_CONFIRMED'));
 
         return $stock;
     }
@@ -300,7 +391,19 @@ class IntradayMultiTimeframeService
             (int) $end
         );
 
-        return $this->api->normalizeCandles($json);
+        $candles = $this->api->normalizeCandles($json);
+
+        // Drop closing-auction bars from intraday series.
+        if (in_array($timeframe, ['5m', '1m'], true)) {
+            $tz = self::MARKET_TZ;
+            $candles = array_values(array_filter(
+                $candles,
+                fn (array $c): bool => Carbon::createFromTimestampUTC((int) $c['timestamp'])
+                    ->setTimezone($tz)->format('H:i') < self::SESSION_CUTOFF
+            ));
+        }
+
+        return $candles;
     }
 
     /**
@@ -312,100 +415,52 @@ class IntradayMultiTimeframeService
      */
     private function aggregateCandles(array $candles, string $timeframe): array
     {
-        $requiredBars = match ($timeframe) {
+        $bars = match ($timeframe) {
             '15m' => 3,
             '30m' => 6,
             default => 1,
         };
 
-        if ($requiredBars === 1 || $candles === []) {
+        if ($bars === 1 || $candles === []) {
             return $candles;
         }
 
-        $intervalSeconds = $requiredBars * 5 * 60;
-        $sourceIntervalSeconds = 5 * 60;
-
-        usort(
-            $candles,
-            fn (array $a, array $b): int =>
-                ((int) ($a['timestamp'] ?? $a['time'] ?? 0))
-                <=> ((int) ($b['timestamp'] ?? $b['time'] ?? 0))
-        );
-
+        $interval = $bars * 300;
+        $now = time();
         $groups = [];
 
-        foreach ($candles as $candle) {
-            $timestamp = (int) ($candle['timestamp'] ?? $candle['time'] ?? 0);
+        foreach ($candles as $c) {
+            $ts = (int) ($c['timestamp'] ?? $c['time'] ?? 0);
 
-            if ($timestamp <= 0) {
-                continue;
+            if ($ts > 0) {
+                $groups[intdiv($ts, $interval) * $interval][] = $c;
             }
-
-            $bucket = intdiv($timestamp, $intervalSeconds) * $intervalSeconds;
-            $groups[$bucket][] = $candle;
         }
 
-        $aggregated = [];
+        ksort($groups);
 
-        foreach ($groups as $bucketTimestamp => $group) {
-            if (count($group) !== $requiredBars) {
+        $out = [];
+
+        foreach ($groups as $bucket => $group) {
+            // Skip only the bucket that is still forming. A bucket with fewer than
+            // $bars candles is valid: a missing 5m bar means no trades happened.
+            if ($bucket + $interval > $now) {
                 continue;
             }
 
-            usort(
-                $group,
-                fn (array $a, array $b): int =>
-                    ((int) ($a['timestamp'] ?? $a['time'] ?? 0))
-                    <=> ((int) ($b['timestamp'] ?? $b['time'] ?? 0))
-            );
+            usort($group, fn (array $a, array $b): int => $a['timestamp'] <=> $b['timestamp']);
 
-            $firstTimestamp = (int) (
-                $group[0]['timestamp'] ?? $group[0]['time'] ?? 0
-            );
-
-            foreach ($group as $index => $candle) {
-                $timestamp = (int) (
-                    $candle['timestamp'] ?? $candle['time'] ?? 0
-                );
-                $expected = $firstTimestamp + ($index * $sourceIntervalSeconds);
-
-                if ($timestamp !== $expected) {
-                    continue 2;
-                }
-            }
-
-            $open = (float) ($group[0]['open'] ?? 0);
-            $close = (float) ($group[count($group) - 1]['close'] ?? 0);
-            $high = max(array_map(
-                fn (array $candle): float => (float) ($candle['high'] ?? 0),
-                $group
-            ));
-            $low = min(array_map(
-                fn (array $candle): float => (float) ($candle['low'] ?? 0),
-                $group
-            ));
-            $volume = array_sum(array_map(
-                fn (array $candle): float => (float) ($candle['volume'] ?? 0),
-                $group
-            ));
-
-            $aggregated[] = [
-                'timestamp' => (int) $bucketTimestamp,
-                'open' => $open,
-                'high' => $high,
-                'low' => $low,
-                'close' => $close,
-                'volume' => $volume,
+            $out[] = [
+                'timestamp' => (int) $bucket,
+                'open' => (float) $group[0]['open'],
+                'high' => (float) max(array_column($group, 'high')),
+                'low' => (float) min(array_column($group, 'low')),
+                'close' => (float) end($group)['close'],
+                'volume' => (float) array_sum(array_column($group, 'volume')),
             ];
         }
 
-        usort(
-            $aggregated,
-            fn (array $a, array $b): int =>
-                $a['timestamp'] <=> $b['timestamp']
-        );
-
-        return $aggregated;
+        return $out;
     }
 
     /**
@@ -485,6 +540,11 @@ private function analyzeTimeframe(array $candles, string $timeframe): array
             'volume_confirmed' => $rvol['rvol'] >= self::MIN_RVOL,
             'bullish_candle' => $candles[$last]['close'] > $candles[$last]['open'],
             'previous_close' => (float) $candles[max(0, $last - 1)]['close'],
+            'last_open' => (float) $candles[$last]['open'],
+            'last_low' => (float) $candles[$last]['low'],
+            'recent_low' => (float) min(array_column(array_slice($candles, -3), 'low')),
+            'pullback_avg_volume' => $this->pullbackAverageVolume($candles),
+            'session_high' => $this->sessionHigh($candles),
         ];
     }
 
@@ -536,12 +596,38 @@ private function analyzeTimeframe(array $candles, string $timeframe): array
             $this->strategyVwapMacd($tf, $hierarchy),
             $this->strategyEmaVwap($tf, $hierarchy),
             $this->strategyBullishDivergence($tf, $hierarchy),
+            $this->strategyVwapPullback($tf, $hierarchy),
         ];
+    }
+
+    /**
+     * Shared higher-timeframe gate: positive hierarchy score, bias not bearish,
+     * and none of 1D / 1H / 30m bearish.
+     */
+    private function higherContext(array $tf, array $hierarchy): bool
+    {
+        if (! ($hierarchy['entry_allowed'] ?? false)) {
+            return false;
+        }
+
+        if (! in_array($hierarchy['bias'] ?? 'NEUTRAL', ['BULLISH', 'NEUTRAL'], true)) {
+            return false;
+        }
+
+        foreach (['1D', '1H', '30m'] as $t) {
+            if (($tf[$t]['trend'] ?? 'UNKNOWN') === 'BEARISH') {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function strategyVwapMacd(array $tf, array $hierarchy): array
     {
-        foreach (['1m', '5m', '15m'] as $timeframe) {
+        $nearMiss = null;
+
+        foreach (self::ENTRY_TIMEFRAMES as $timeframe) {
             if (! isset($tf[$timeframe])) {
                 continue;
             }
@@ -552,7 +638,7 @@ private function analyzeTimeframe(array $candles, string $timeframe): array
             $histPositive = $x['macd_histogram'] > 0;
             $volume = $x['volume_confirmed'];
             $trendSupport = in_array($x['trend'], ['BULLISH', 'NEUTRAL'], true);
-            $higherContext = in_array($hierarchy['bias'], ['BULLISH', 'NEUTRAL'], true);
+            $higherContext = $this->higherContext($tf, $hierarchy);
 
             $conditions = [
                 'price_above_vwap' => $priceAboveVwap,
@@ -562,6 +648,8 @@ private function analyzeTimeframe(array $candles, string $timeframe): array
                 'timeframe_trend_support' => $trendSupport,
                 'higher_timeframe_context' => $higherContext,
             ];
+
+            $nearMiss = $this->betterNearMiss($nearMiss, $timeframe, $conditions);
 
             if ($priceAboveVwap && $macdBullish && $histPositive && $volume && $trendSupport && $higherContext) {
                 return $this->signalResult(
@@ -574,12 +662,14 @@ private function analyzeTimeframe(array $candles, string $timeframe): array
             }
         }
 
-        return $this->noSignalResult('VWAP_MACD');
+        return $this->noSignalResult('VWAP_MACD', $nearMiss);
     }
 
     private function strategyEmaVwap(array $tf, array $hierarchy): array
     {
-        foreach (['1m', '5m', '15m'] as $timeframe) {
+        $nearMiss = null;
+
+        foreach (self::ENTRY_TIMEFRAMES as $timeframe) {
             if (! isset($tf[$timeframe])) {
                 continue;
             }
@@ -597,7 +687,7 @@ private function analyzeTimeframe(array $candles, string $timeframe): array
             $vwapRising = $x['vwap_rising'];
             $volume = $x['volume_confirmed'];
             $trendSupport = in_array($x['trend'], ['BULLISH', 'NEUTRAL'], true);
-            $higherContext = in_array($hierarchy['bias'], ['BULLISH', 'NEUTRAL'], true);
+            $higherContext = $this->higherContext($tf, $hierarchy);
 
             // A real cross requires the previous EMA to be at/below the previous VWAP.
             // The previous VWAP is stored by the timeframe analysis.
@@ -617,6 +707,8 @@ private function analyzeTimeframe(array $candles, string $timeframe): array
                 'higher_timeframe_context' => $higherContext,
             ];
 
+            $nearMiss = $this->betterNearMiss($nearMiss, $timeframe, $conditions);
+
             if ($crossed && $priceAbove && $vwapRising && $volume && $trendSupport && $higherContext) {
                 return $this->signalResult(
                     'EMA_VWAP',
@@ -628,12 +720,14 @@ private function analyzeTimeframe(array $candles, string $timeframe): array
             }
         }
 
-        return $this->noSignalResult('EMA_VWAP');
+        return $this->noSignalResult('EMA_VWAP', $nearMiss);
     }
 
     private function strategyBullishDivergence(array $tf, array $hierarchy): array
     {
-        foreach (['15m', '5m', '1m'] as $timeframe) {
+        $nearMiss = null;
+
+        foreach (self::ENTRY_TIMEFRAMES as $timeframe) {
             // Divergence needs the raw candles, therefore this strategy is evaluated
             // from the compact divergence snapshot saved below.
             if (! isset($tf[$timeframe]['divergence'])) {
@@ -648,7 +742,7 @@ private function analyzeTimeframe(array $candles, string $timeframe): array
             $vwap = $x['vwap'];
             $priceAboveVwap = $vwap !== null && $x['last_close'] >= $vwap;
             $macdConfirmed = $x['macd'] >= $x['macd_signal'];
-            $context = in_array($hierarchy['bias'], ['BULLISH', 'NEUTRAL'], true);
+            $context = $this->higherContext($tf, $hierarchy);
 
             $conditions = [
                 'bullish_divergence_count' => $count >= self::DIVERGENCE_MIN_COUNT,
@@ -657,6 +751,8 @@ private function analyzeTimeframe(array $candles, string $timeframe): array
                 'volume_confirmed' => $volume,
                 'higher_timeframe_context' => $context,
             ];
+
+            $nearMiss = $this->betterNearMiss($nearMiss, $timeframe, $conditions);
 
             if ($count >= self::DIVERGENCE_MIN_COUNT && $priceAboveVwap && $macdConfirmed && $volume && $context) {
                 return $this->signalResult(
@@ -669,7 +765,7 @@ private function analyzeTimeframe(array $candles, string $timeframe): array
             }
         }
 
-        return $this->noSignalResult('BULLISH_DIVERGENCE');
+        return $this->noSignalResult('BULLISH_DIVERGENCE', $nearMiss);
     }
 
     private function signalResult(string $strategy, string $timeframe, int $strength, array $conditions, string $reason): array
@@ -684,68 +780,247 @@ private function analyzeTimeframe(array $candles, string $timeframe): array
         ];
     }
 
-    private function noSignalResult(string $strategy): array
+    private function noSignalResult(string $strategy, ?array $near = null): array
     {
+        $conditions = $near['conditions'] ?? [];
+
         return [
             'strategy' => $strategy,
             'signal' => 'NONE',
             'timeframe' => null,
             'strength' => 0,
-            'conditions' => [],
+            'conditions' => $conditions,
+            'failed_conditions' => array_keys(array_filter($conditions, fn ($v) => ! $v)),
+            'near_miss_timeframe' => $near['timeframe'] ?? null,
             'reason' => null,
         ];
     }
 
-    private function selectBestSignal(array $signals): ?array
+    /**
+     * Returns a reject reason when the entry is stretched, otherwise null.
+     * 1) entry timeframe RSI is overbought
+     * 2) price is too far above VWAP (measured in ATRs)
+     * 3) price is at the session high while RSI and stochastic are both elevated (chasing the top)
+     */
+    private function overextensionReason(array $x, float $entry, float $sessionHigh, float $atr): ?string
     {
-        if ($signals === []) {
-            return null;
+        $rsi = $x['rsi'] ?? null;
+        $stoch = $x['stochastic_k'] ?? null;
+        $vwap = $x['vwap'] ?? null;
+
+        if ($rsi !== null && $rsi >= self::MAX_ENTRY_RSI) {
+            return 'OVEREXTENDED_RSI';
         }
 
-        usort($signals, function (array $a, array $b) {
-            $priority = ['1m' => 3, '5m' => 2, '15m' => 1];
+        if ($vwap !== null && $atr > 0 && (($entry - $vwap) / $atr) > self::MAX_VWAP_EXTENSION_ATR) {
+            return 'OVEREXTENDED_FROM_VWAP';
+        }
+
+        $atHigh = $sessionHigh > 0 && $entry >= $sessionHigh * (1 - self::NEAR_HIGH_PCT / 100);
+
+        if ($atHigh
+            && $rsi !== null && $rsi >= self::NEAR_HIGH_RSI
+            && $stoch !== null && $stoch >= self::NEAR_HIGH_STOCH
+        ) {
+            return 'CHASING_SESSION_HIGH';
+        }
+
+        return null;
+    }
+
+    /** Keeps the timeframe whose conditions came closest to firing, for diagnostics. */
+    private function betterNearMiss(?array $best, string $timeframe, array $conditions): array
+    {
+        $score = count(array_filter($conditions));
+
+        if ($best === null || $score > $best['score']) {
+            return ['score' => $score, 'timeframe' => $timeframe, 'conditions' => $conditions];
+        }
+
+        return $best;
+    }
+
+    /**
+     * VWAP / EMA20 pullback inside an uptrend: price dips to VWAP or EMA20 on weak
+     * volume, then closes back above both with a bullish candle.
+     */
+    private function strategyVwapPullback(array $tf, array $hierarchy): array
+    {
+        $nearMiss = null;
+
+        foreach (self::ENTRY_TIMEFRAMES as $timeframe) {
+            $x = $tf[$timeframe] ?? null;
+
+            if ($x === null || $x['vwap'] === null || $x['ema_20'] === null || $x['ema_50'] === null) {
+                continue;
+            }
+
+            $vwap = (float) $x['vwap'];
+            $ema20 = (float) $x['ema_20'];
+            $close = (float) $x['last_close'];
+            $low = (float) $x['recent_low'];
+
+            $touched = $low <= $vwap * 1.003 || $low <= $ema20 * 1.003;
+            $closedAbove = $close > $vwap && $close > $ema20;
+            $bullish = (bool) $x['bullish_candle'];
+            $uptrend = $ema20 > (float) $x['ema_50'];
+            $weakPullbackVolume = $x['average_volume'] !== null
+                && (float) $x['average_volume'] > 0
+                && (float) $x['pullback_avg_volume'] <= (float) $x['average_volume'];
+            $m30 = $tf['30m'] ?? null;
+            $m30Up = $m30 !== null
+                && $m30['ema_20'] !== null
+                && $m30['ema_50'] !== null
+                && $m30['ema_20'] > $m30['ema_50'];
+            $context = $this->higherContext($tf, $hierarchy);
+
+            $conditions = [
+                'pullback_touched_vwap_or_ema20' => $touched,
+                'closed_above_vwap_and_ema20' => $closedAbove,
+                'bullish_candle' => $bullish,
+                'timeframe_uptrend' => $uptrend,
+                'pullback_volume_weak' => $weakPullbackVolume,
+                '30m_uptrend' => $m30Up,
+                'higher_timeframe_context' => $context,
+            ];
+
+            $nearMiss = $this->betterNearMiss($nearMiss, $timeframe, $conditions);
+
+            if ($touched && $closedAbove && $bullish && $uptrend && $weakPullbackVolume && $m30Up && $context) {
+                return $this->signalResult(
+                    'VWAP_PULLBACK',
+                    $timeframe,
+                    82,
+                    $conditions,
+                    'Pullback to VWAP/EMA20 on weak volume in an uptrend, closed back above both with a bullish candle.'
+                );
+            }
+        }
+
+        return $this->noSignalResult('VWAP_PULLBACK', $nearMiss);
+    }
+
+    private function sortSignals(array $signals): array
+    {
+        $priority = ['15m' => 3, '5m' => 2, '1m' => 0];
+
+        usort($signals, function (array $a, array $b) use ($priority) {
             $scoreA = ($a['strength'] ?? 0) + ($priority[$a['timeframe']] ?? 0) * 2;
             $scoreB = ($b['strength'] ?? 0) + ($priority[$b['timeframe']] ?? 0) * 2;
 
             return $scoreB <=> $scoreA;
         });
 
-        return $signals[0];
+        return $signals;
+    }
+
+    private function pullbackAverageVolume(array $candles): float
+    {
+        $last = count($candles) - 1;
+        $slice = array_slice($candles, max(0, $last - 3), min(3, $last));
+
+        if ($slice === []) {
+            return 0.0;
+        }
+
+        return array_sum(array_map(fn ($c) => (float) $c['volume'], $slice)) / count($slice);
+    }
+
+    private function sessionHigh(array $candles): float
+    {
+        $tz = self::MARKET_TZ;
+        $toDate = fn (array $c): string => Carbon::createFromTimestampUTC((int) $c['timestamp'])
+            ->setTimezone($tz)
+            ->toDateString();
+
+        $lastDate = $toDate($candles[count($candles) - 1]);
+        $high = 0.0;
+
+        for ($i = count($candles) - 1; $i >= 0; $i--) {
+            if ($toDate($candles[$i]) !== $lastDate) {
+                break;
+            }
+
+            $high = max($high, (float) $candles[$i]['high']);
+        }
+
+        return $high;
     }
 
     private function buildTradePlan(array $signal, array $tf, array $hierarchy): array
     {
-        $entryTf = $signal['timeframe'];
-        $x = $tf[$entryTf] ?? null;
+        $x = $tf[$signal['timeframe']] ?? null;
 
         if ($x === null) {
-            return [];
+            return ['valid' => false, 'reject_reason' => 'NO_TIMEFRAME'];
         }
 
-        $entry = (float) $x['last_close'];
-        $atr = (float) ($x['atr_14'] ?? 0);
-        if ($atr <= 0) {
-            $atr = $this->estimateAtrFromTimeframe($entryTf, $tf);
+        // Use the freshest price (5m), not a possibly stale 15m bar.
+        $entry = (float) ($tf['5m']['last_close'] ?? $x['last_close']);
+
+        if ($entry <= 0) {
+            return ['valid' => false, 'reject_reason' => 'INVALID_PRICE'];
         }
 
-        // Conservative initial intraday risk model. These are intentionally isolated
-        // so we can replace them with a support/resistance engine after the first live test.
-        $stop = $entry - ($atr * 1.0);
-        $target1 = $entry + ($atr * 1.5);
-        $target2 = $entry + ($atr * 2.5);
+        // ATR floor: never below 25% of daily ATR or 0.3% of price.
+        $atr = max(
+            (float) ($x['atr_14'] ?? 0),
+            (float) ($tf['1D']['atr_14'] ?? 0) * 0.25,
+            $entry * 0.003
+        );
 
-        if ($x['vwap'] !== null && $x['vwap'] < $entry) {
+        $stop = $entry - ($atr * 1.2);
+
+        if (($x['vwap'] ?? null) !== null && $x['vwap'] < $entry) {
             $stop = max($stop, $x['vwap'] - ($atr * 0.25));
         }
 
+        // Stop must be at least MIN_STOP_DISTANCE_PCT away to avoid noise stop-outs.
+        $stop = min($stop, $entry * (1 - self::MIN_STOP_DISTANCE_PCT / 100));
+
+        $risk = $entry - $stop;
+        $target1 = $entry + $risk * self::TARGET1_R;
+        $target2 = $entry + $risk * self::TARGET2_R;
+        $cost = $entry * self::ROUND_TRIP_COST_PCT / 100;
+
+        // Resistance rule: if the session high sits between entry and target 1, target 1 is
+        // capped at the session high (the first realistic exit) and the old target 1 becomes
+        // target 2. The capped plan must still pass the profit / R:R gates below.
+        $sessionHigh = (float) ($x['session_high'] ?? 0);
+        $target1Capped = false;
+
+        if ($sessionHigh > $entry * 1.001 && $sessionHigh < $target1) {
+            $target2 = $target1;
+            $target1 = $sessionHigh;
+            $target1Capped = true;
+        }
+
+        $netProfit = (($target1 - $entry) - $cost) / $entry * 100;
+        $netRrT1 = (($target1 - $entry) - $cost) / ($risk + $cost);
+        $netRrT2 = (($target2 - $entry) - $cost) / ($risk + $cost);
+
+        $reject = $this->overextensionReason($x, $entry, $sessionHigh, $atr);
+
+        if ($reject === null) {
+            if ($netProfit < self::MIN_NET_PROFIT_PCT) {
+                $reject = $target1Capped ? 'RESISTANCE_TOO_CLOSE' : 'PROFIT_TOO_SMALL_AFTER_COSTS';
+            } elseif ($netRrT1 < self::MIN_NET_RR) {
+                $reject = $target1Capped ? 'RESISTANCE_LIMITS_RISK_REWARD' : 'LOW_NET_RISK_REWARD';
+            }
+        }
+
         return [
+            'valid' => $reject === null,
+            'reject_reason' => $reject,
             'entry' => round($entry, 4),
             'stop_loss' => round($stop, 4),
             'target_1' => round($target1, 4),
             'target_2' => round($target2, 4),
-            'risk_reward_t1' => $entry > $stop ? round(($target1 - $entry) / ($entry - $stop), 2) : null,
-            'risk_reward_t2' => $entry > $stop ? round(($target2 - $entry) / ($entry - $stop), 2) : null,
-            'entry_timeframe' => $entryTf,
+            'risk_reward_t1' => round($netRrT1, 2),
+            'risk_reward_t2' => round($netRrT2, 2),
+            'net_profit_pct_t1' => round($netProfit, 2),
+            'target_1_capped_at_session_high' => $target1Capped,
+            'entry_timeframe' => $signal['timeframe'],
             'hierarchy_bias' => $hierarchy['bias'],
         ];
     }
@@ -1009,7 +1284,7 @@ private function analyzeTimeframe(array $candles, string $timeframe): array
 
         foreach ($candles as $i => $candle) {
             $date = Carbon::createFromTimestampUTC((int) $candle['timestamp'])
-                ->setTimezone(config('app.timezone', 'Africa/Cairo'))
+                ->setTimezone(self::MARKET_TZ)
                 ->toDateString();
 
             if ($date !== $session) {
