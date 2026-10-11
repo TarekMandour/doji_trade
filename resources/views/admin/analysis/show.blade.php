@@ -71,6 +71,7 @@
                             <th>{{ __('lang.symbol') }}</th>
                             <th>{{ __('lang.name') }}</th>
                             <th>{{ __('lang.status') }}</th>
+                            <th>Timeframe</th>
                             @if(($data->type ?? '') === 'fixed_volume_profile')
                                 <th>POC</th>
                                 <th>VAH</th>
@@ -99,6 +100,7 @@
                                         {{ $stock['status'] ?? '-' }}
                                     </span>
                                 </td>
+                                <td>{{ $stock['entry_timeframe'] ?? $stock['timeframe'] ?? '-' }}</td>
                                 @if(($data->type ?? '') === 'fixed_volume_profile')
                                     <td>{{ $stock['poc'] ?? '-' }}</td>
                                     <td>{{ $stock['vah'] ?? '-' }}</td>
@@ -118,7 +120,7 @@
                             </tr>
                         @empty
                             <tr>
-                                <td colspan="{{ ($data->type ?? '') === 'fixed_volume_profile' ? 11 : 8 }}">{{ __('lang.no_data') }}</td>
+                                <td colspan="{{ ($data->type ?? '') === 'fixed_volume_profile' ? 12 : 9 }}">{{ __('lang.no_data') }}</td>
                             </tr>
                         @endforelse
                     </tbody>
