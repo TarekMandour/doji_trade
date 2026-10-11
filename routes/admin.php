@@ -120,8 +120,10 @@ Route::middleware('setLocale')->group(function () {
             Route::post('/delete', [AnalysisController::class, 'destroy'])->name('delete')->middleware('permission:analysis delete');
             Route::get('/create', [AnalysisController::class, 'create'])->name('create')->middleware('permission:analysis create');
             Route::get('/intraday', [AnalysisController::class, 'intraday'])->name('intraday')->middleware('permission:analysis create');
+            Route::get('/fixed-volume-profile', [AnalysisController::class, 'fixedVolumeProfile'])->name('fixed-volume-profile')->middleware('permission:analysis create');
             Route::post('/store', [AnalysisController::class, 'store'])->name('store')->middleware('permission:analysis create');
             Route::post('/store-intraday', [AnalysisController::class, 'storeIntraday'])->name('store-intraday')->middleware('permission:analysis create');
+            Route::post('/store-fixed-volume-profile', [AnalysisController::class, 'storeFixedVolumeProfile'])->name('store-fixed-volume-profile')->middleware('permission:analysis create');
         });
 
     });
