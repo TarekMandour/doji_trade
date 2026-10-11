@@ -354,18 +354,42 @@ class FixedVolumeProfileService
 
                 $entry = (float) $retest['close'];
                 $riskFloor = min((float) $retest['low'], $profile['vah']);
-                $stopLoss = round($riskFloor - self::PRICE_BIN_SIZE, 4);
+
+                // Use a volatility-aware stop buffer rather than a fixed one-piastre buffer.
+                $recentRanges = [];
+                for ($rangeIndex = max(0, $retestIndex - 5); $rangeIndex < $retestIndex; $rangeIndex++) {
+                    $range = (float) $candles[$rangeIndex]['high'] - (float) $candles[$rangeIndex]['low'];
+                    if ($range > 0) {
+                        $recentRanges[] = $range;
+                    }
+                }
+                sort($recentRanges);
+                $medianRange = $recentRanges !== []
+                    ? $recentRanges[(int) floor((count($recentRanges) - 1) / 2)]
+                    : self::PRICE_BIN_SIZE;
+                $stopBuffer = max(self::PRICE_BIN_SIZE, $medianRange * 0.20);
+                $stopLoss = round($riskFloor - $stopBuffer, 4);
                 $risk = $entry - $stopLoss;
 
                 if ($risk <= 0) {
                     continue;
                 }
 
+                $targets = $this->calculateTargets($candles, $retestIndex, $entry, $risk);
+                if ($targets === null) {
+                    // No realistic resistance target with an acceptable reward/risk ratio.
+                    continue;
+                }
+
                 $setups[] = [
                     'entry' => round($entry, 4),
-                    'stop_loss' => round($stopLoss, 4),
-                    'target_1' => round($entry + ($risk * self::TARGET1_R), 4),
-                    'target_2' => round($entry + ($risk * self::TARGET2_R), 4),
+                    'stop_loss' => $stopLoss,
+                    'target_1' => $targets['target_1'],
+                    'target_2' => $targets['target_2'],
+                    'target_1_method' => $targets['target_1_method'],
+                    'target_2_method' => $targets['target_2_method'],
+                    'risk_reward_1' => $targets['risk_reward_1'],
+                    'risk_reward_2' => $targets['risk_reward_2'],
                     'relative_volume' => round($rvol, 2),
                     'vwap' => round($vwapByIndex[$retestIndex], 4),
                     'breakout_at' => Carbon::createFromTimestamp((int) $breakout['timestamp'], self::MARKET_TZ)->format('Y-m-d H:i'),
@@ -387,6 +411,113 @@ class FixedVolumeProfileService
         unset($setup['_timestamp']);
 
         return $setup;
+    }
+
+    /**
+     * Pick realistic targets using resistance levels from completed candles.
+     * R-multiples are minimum reward/risk filters and fallback targets only
+     * when no resistance exists before the corresponding R level.
+     */
+    private function calculateTargets(array $candles, int $entryIndex, float $entry, float $risk): ?array
+    {
+        $minimumTarget1 = $entry + ($risk * self::TARGET1_R);
+        $minimumTarget2 = $entry + ($risk * self::TARGET2_R);
+        $resistances = [];
+
+        // Pivot highs are only taken from candles available before the entry.
+        for ($i = 2; $i < $entryIndex - 1; $i++) {
+            $high = (float) ($candles[$i]['high'] ?? 0);
+            if ($high <= $entry) {
+                continue;
+            }
+
+            $isPivotHigh = $high >= (float) ($candles[$i - 1]['high'] ?? 0)
+                && $high >= (float) ($candles[$i - 2]['high'] ?? 0)
+                && $high > (float) ($candles[$i + 1]['high'] ?? 0);
+
+            if ($isPivotHigh) {
+                $resistances[] = $high;
+            }
+        }
+
+        // The highest prior candle high is also a relevant local resistance.
+        for ($i = 0; $i < $entryIndex; $i++) {
+            $high = (float) ($candles[$i]['high'] ?? 0);
+            if ($high > $entry) {
+                $resistances[] = $high;
+            }
+        }
+
+        $resistances = array_values(array_unique(array_map(
+            fn ($price) => round((float) $price, 4),
+            $resistances
+        )));
+        sort($resistances, SORT_NUMERIC);
+
+        // A resistance too close to entry is not a valid first target.
+        $target1 = null;
+        foreach ($resistances as $resistance) {
+            if ($resistance >= $minimumTarget1) {
+                $target1 = $resistance;
+                break;
+            }
+        }
+
+        if ($target1 === null) {
+            // Do not force a theoretical target through a known resistance.
+            $blockingResistance = $resistances[0] ?? null;
+            if ($blockingResistance !== null && $blockingResistance < $minimumTarget1) {
+                return null;
+            }
+
+            $target1 = round($minimumTarget1, 4);
+            $target1Method = 'R_MULTIPLE_NO_RESISTANCE_BEFORE_TARGET';
+        } else {
+            $target1Method = 'RESISTANCE';
+        }
+
+        $target2 = null;
+        foreach ($resistances as $resistance) {
+            if ($resistance > $target1 && $resistance >= $minimumTarget2) {
+                $target2 = $resistance;
+                break;
+            }
+        }
+
+        if ($target2 !== null) {
+            $target2Method = 'NEXT_RESISTANCE';
+        } else {
+            $blockingTarget2 = null;
+            foreach ($resistances as $resistance) {
+                if ($resistance > $target1 && $resistance < $minimumTarget2) {
+                    $blockingTarget2 = $resistance;
+                    break;
+                }
+            }
+
+            if ($blockingTarget2 !== null) {
+                return null;
+            }
+
+            $target2 = round(max($minimumTarget2, $target1 + self::PRICE_BIN_SIZE), 4);
+            $target2Method = 'R_MULTIPLE_NO_RESISTANCE_BEFORE_TARGET';
+        }
+
+        $rr1 = round(($target1 - $entry) / $risk, 2);
+        $rr2 = round(($target2 - $entry) / $risk, 2);
+
+        if ($target1 <= $entry || $target2 <= $target1 || $rr1 < self::TARGET1_R || $rr2 < self::TARGET2_R) {
+            return null;
+        }
+
+        return [
+            'target_1' => round($target1, 4),
+            'target_2' => round($target2, 4),
+            'target_1_method' => $target1Method,
+            'target_2_method' => $target2Method,
+            'risk_reward_1' => $rr1,
+            'risk_reward_2' => $rr2,
+        ];
     }
 
     private function relativeVolume(array $candles, int $index): float
