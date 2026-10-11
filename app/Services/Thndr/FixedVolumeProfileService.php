@@ -185,7 +185,7 @@ class FixedVolumeProfileService
             'val' => $profile['val'],
         ];
 
-        $signal = $this->findSetup($sessionFiveMinute, $profile);
+        $signal = $this->findSetup($sessionFiveMinute, $profile, $profileEnd->timestamp);
         if ($signal === null) {
             $reason = count($sessionFiveMinute) < 4
                 ? 'INSUFFICIENT_POST_PROFILE_5MIN_CANDLES'
@@ -304,7 +304,7 @@ class FixedVolumeProfileService
         ];
     }
 
-    private function findSetup(array $candles, array $profile): ?array
+    private function findSetup(array $candles, array $profile, int $profileEndTimestamp): ?array
     {
         if (count($candles) < 4) {
             return null;
@@ -324,6 +324,10 @@ class FixedVolumeProfileService
         $setups = [];
         for ($breakoutIndex = 1; $breakoutIndex < count($candles) - 1; $breakoutIndex++) {
             $breakout = $candles[$breakoutIndex];
+            // The profile is frozen at the end of the opening range; never signal on candles used to build it.
+            if ((int) $breakout['timestamp'] < $profileEndTimestamp) {
+                continue;
+            }
             $buffer = max(self::PRICE_BIN_SIZE, $profile['vah'] * 0.001);
             $rvol = $this->relativeVolume($candles, $breakoutIndex);
 
