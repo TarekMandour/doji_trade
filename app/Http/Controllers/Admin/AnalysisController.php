@@ -7,6 +7,7 @@ use App\Http\Requests\AnalysisRequest;
 use App\Models\Analysis;
 use App\Models\Watchlist;
 use App\Services\Thndr\IntradayMultiTimeframeService;
+use App\Services\Thndr\FixedVolumeProfileService;
 use App\Services\Thndr\StockAnalysisService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -71,6 +72,13 @@ class AnalysisController extends Controller
         return view($this->viewPath.'.intraday', compact('watchlists', 'resolutions'));
     }
 
+    public function fixedVolumeProfile()
+    {
+        $watchlists = Watchlist::withCount('stocks')->orderBy('name')->get();
+
+        return view($this->viewPath.'.fixed-volume-profile', compact('watchlists'));
+    }
+
     public function store(AnalysisRequest $request, StockAnalysisService $service)
     {
         $data = $request->validated();
@@ -116,6 +124,30 @@ class AnalysisController extends Controller
             'type' => 'intraday',
             'watchlist_id' => $watchlist->id,
             'analysis_date' => now()->toDateString(),
+            'file_path' => $filePath,
+            'stocks_count' => count($results),
+        ]);
+
+        return redirect(route($this->route.'.show', $analysis->id))->with('message', __('lang.add_success'))->with('status', 'success');
+    }
+
+    public function storeFixedVolumeProfile(AnalysisRequest $request, FixedVolumeProfileService $service)
+    {
+        $data = $request->validated();
+        $watchlist = Watchlist::with('stocks')->findOrFail($data['watchlist_id']);
+        $assetIds = $watchlist->stocks->pluck('asset_id')->all();
+
+        $results = $service->analyzeAssetIds($assetIds);
+        $filePath = 'analysis/fixed-volume-profile/'.now('Africa/Cairo')->format('Ymd_His').'_'.$watchlist->id.'.json';
+
+        Storage::disk('local')->put($filePath, json_encode($results, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+        $title = $data['title'] ?: $watchlist->name.' - Fixed Volume Profile';
+        $analysis = $this->objectModel::create([
+            'title' => $title,
+            'type' => 'fixed_volume_profile',
+            'watchlist_id' => $watchlist->id,
+            'analysis_date' => now('Africa/Cairo')->toDateString(),
             'file_path' => $filePath,
             'stocks_count' => count($results),
         ]);

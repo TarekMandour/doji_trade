@@ -71,11 +71,22 @@
                             <th>{{ __('lang.symbol') }}</th>
                             <th>{{ __('lang.name') }}</th>
                             <th>{{ __('lang.status') }}</th>
-                            <th>{{ __('lang.trend') }}</th>
-                            <th>{{ __('lang.opportunity_score') }}</th>
-                            <th>{{ __('lang.entry_zone') }}</th>
-                            <th>{{ __('lang.stop_loss') }}</th>
-                            <th>{{ __('lang.target') }}</th>
+                            @if(($data->type ?? '') === 'fixed_volume_profile')
+                                <th>POC</th>
+                                <th>VAH</th>
+                                <th>VAL</th>
+                                <th>{{ __('lang.entry_zone') }}</th>
+                                <th>{{ __('lang.stop_loss') }}</th>
+                                <th>Target 1</th>
+                                <th>Target 2</th>
+                                <th>{{ __('lang.reason') }}</th>
+                            @else
+                                <th>{{ __('lang.trend') }}</th>
+                                <th>{{ __('lang.opportunity_score') }}</th>
+                                <th>{{ __('lang.entry_zone') }}</th>
+                                <th>{{ __('lang.stop_loss') }}</th>
+                                <th>{{ __('lang.target') }}</th>
+                            @endif
                         </tr>
                     </thead>
                     <tbody>
@@ -84,19 +95,30 @@
                                 <td>{{ $stock['symbol'] ?? $stock['symbol_code'] ?? '-' }}</td>
                                 <td>{{ $stock['name'] ?? '-' }}</td>
                                 <td>
-                                    <span class="badge {{ ($stock['status'] ?? '') === 'QUALIFIED' ? 'badge-light-success' : 'badge-light-danger' }}">
+                                    <span class="badge {{ ($stock['status'] ?? '') === 'QUALIFIED' ? 'badge-light-success' : (($stock['status'] ?? '') === 'NO_SIGNAL' ? 'badge-light-warning' : 'badge-light-danger') }}">
                                         {{ $stock['status'] ?? '-' }}
                                     </span>
                                 </td>
-                                <td>{{ $stock['trend'] ?? '-' }}</td>
-                                <td>{{ $stock['opportunity_score'] ?? '-' }}</td>
-                                <td>{{ $stock['entry_price'] ?? $stock['entry_low'] ?? '-' }}</td>
-                                <td>{{ $stock['stop_loss'] ?? '-' }}</td>
-                                <td>{{ $stock['target1'] ?? '-' }}</td>
+                                @if(($data->type ?? '') === 'fixed_volume_profile')
+                                    <td>{{ $stock['poc'] ?? '-' }}</td>
+                                    <td>{{ $stock['vah'] ?? '-' }}</td>
+                                    <td>{{ $stock['val'] ?? '-' }}</td>
+                                    <td>{{ $stock['entry'] ?? '-' }}</td>
+                                    <td>{{ $stock['stop_loss'] ?? '-' }}</td>
+                                    <td>{{ $stock['target_1'] ?? '-' }}</td>
+                                    <td>{{ $stock['target_2'] ?? '-' }}</td>
+                                    <td>{{ $stock['reason'] ?? '-' }}</td>
+                                @else
+                                    <td>{{ $stock['trend'] ?? '-' }}</td>
+                                    <td>{{ $stock['opportunity_score'] ?? '-' }}</td>
+                                    <td>{{ $stock['entry'] ?? $stock['entry_price'] ?? $stock['entry_low'] ?? '-' }}</td>
+                                    <td>{{ $stock['stop_loss'] ?? '-' }}</td>
+                                    <td>{{ $stock['target_1'] ?? $stock['target1'] ?? '-' }}</td>
+                                @endif
                             </tr>
                         @empty
                             <tr>
-                                <td colspan="8">{{ __('lang.no_data') }}</td>
+                                <td colspan="{{ ($data->type ?? '') === 'fixed_volume_profile' ? 11 : 8 }}">{{ __('lang.no_data') }}</td>
                             </tr>
                         @endforelse
                     </tbody>
