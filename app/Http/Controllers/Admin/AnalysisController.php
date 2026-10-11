@@ -138,6 +138,31 @@ class AnalysisController extends Controller
         $assetIds = $watchlist->stocks->pluck('asset_id')->all();
 
         $results = $service->analyzeAssetIds($assetIds);
+
+        // Use the watchlist's own stock metadata as the canonical display source.
+        // Thndr marketwatch may omit symbol/name or expose only the internal asset ID.
+        $stocksByAssetId = $watchlist->stocks->keyBy(fn ($stock) => (string) $stock->asset_id);
+        foreach ($results as &$result) {
+            $assetId = (string) ($result['asset_id'] ?? '');
+            $stock = $stocksByAssetId->get($assetId);
+
+            if (! $stock) {
+                continue;
+            }
+
+            $result['symbol'] = $stock->symbol
+                ?? $stock->symbol_code
+                ?? $stock->ticker
+                ?? $result['symbol']
+                ?? null;
+            $result['name'] = $stock->name
+                ?? $stock->company_name
+                ?? $stock->asset_name
+                ?? $result['name']
+                ?? null;
+        }
+        unset($result);
+
         $filePath = 'analysis/fixed-volume-profile/'.now('Africa/Cairo')->format('Ymd_His').'_'.$watchlist->id.'.json';
 
         Storage::disk('local')->put($filePath, json_encode($results, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
