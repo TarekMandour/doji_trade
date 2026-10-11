@@ -71,7 +71,7 @@ class AnalysisController extends Controller
         return view($this->viewPath.'.intraday', compact('watchlists', 'resolutions'));
     }
 
-    public function store(AnalysisRequest $request, StockAnalysisService $service)
+    public function fixedVolumeProfile()\n    {\n        $watchlists = Watchlist::withCount('stocks')->orderBy('name')->get();\n\n        return view($this->viewPath.'.fixed-volume-profile', compact('watchlists'));\n    }\n\n    public function store(AnalysisRequest $request, StockAnalysisService $service)
     {
         $data = $request->validated();
 
@@ -123,7 +123,7 @@ class AnalysisController extends Controller
         return redirect(route($this->route.'.show', $analysis->id))->with('message', __('lang.add_success'))->with('status', 'success');
     }
 
-    public function show($id)
+    public function storeFixedVolumeProfile(AnalysisRequest $request, FixedVolumeProfileService $service)\n    {\n        $data = $request->validated();\n        $watchlist = Watchlist::with('stocks')->findOrFail($data['watchlist_id']);\n        $assetIds = $watchlist->stocks->pluck('asset_id')->all();\n\n        $results = $service->analyzeAssetIds($assetIds);\n        $filePath = 'analysis/fixed-volume-profile/'.now('Africa/Cairo')->format('Ymd_His').'_'.$watchlist->id.'.json';\n\n        Storage::disk('local')->put($filePath, json_encode($results, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));\n\n        $title = $data['title'] ?: $watchlist->name.' - Fixed Volume Profile';\n        $analysis = $this->objectModel::create([\n            'title' => $title,\n            'type' => 'fixed_volume_profile',\n            'watchlist_id' => $watchlist->id,\n            'analysis_date' => now('Africa/Cairo')->toDateString(),\n            'file_path' => $filePath,\n            'stocks_count' => count($results),\n        ]);\n\n        return redirect(route($this->route.'.show', $analysis->id))->with('message', __('lang.add_success'))->with('status', 'success');\n    }\n\n    public function show($id)
     {
         $data = $this->objectModel::with('watchlist')->findOrFail($id);
 
