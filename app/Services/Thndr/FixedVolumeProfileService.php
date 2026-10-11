@@ -143,7 +143,8 @@ class FixedVolumeProfileService
             ]);
         }
 
-        $uniqueProfileTimestamps = count(array_unique(array_map(fn (array $candle) => (int) $candle['timestamp'], $sessionOneMinute)));\n        if (count($sessionOneMinute) < self::MIN_PROFILE_CANDLES || $uniqueProfileTimestamps < self::MIN_PROFILE_CANDLES) {
+        $uniqueProfileTimestamps = count(array_unique(array_map(fn (array $candle) => (int) $candle['timestamp'], $sessionOneMinute)));
+        if (count($sessionOneMinute) < self::MIN_PROFILE_CANDLES || $uniqueProfileTimestamps < self::MIN_PROFILE_CANDLES) {
             return $this->emptyResult($stock, 'REJECTED', 'INSUFFICIENT_OPENING_CANDLES', null, [
                 'session_date' => $sessionDate,
                 'profile_candles_count' => count($sessionOneMinute),
