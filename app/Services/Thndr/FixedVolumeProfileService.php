@@ -19,7 +19,7 @@ class FixedVolumeProfileService
     private const PROFILE_MINUTES = 30;
     private const VALUE_AREA_PERCENT = 0.70;
     private const PRICE_BIN_SIZE = 0.01;
-    private const MIN_PROFILE_CANDLES = 25;
+    private const MIN_PROFILE_CANDLES = 30;
     private const MIN_RELATIVE_VOLUME = 1.20;
     private const MAX_RETEST_CANDLES = 3;
     private const TARGET1_R = 1.5;
@@ -143,7 +143,7 @@ class FixedVolumeProfileService
             ]);
         }
 
-        if (count($sessionOneMinute) < self::MIN_PROFILE_CANDLES) {
+        $uniqueProfileTimestamps = count(array_unique(array_map(fn (array $candle) => (int) $candle['timestamp'], $sessionOneMinute)));\n        if (count($sessionOneMinute) < self::MIN_PROFILE_CANDLES || $uniqueProfileTimestamps < self::MIN_PROFILE_CANDLES) {
             return $this->emptyResult($stock, 'REJECTED', 'INSUFFICIENT_OPENING_CANDLES', null, [
                 'session_date' => $sessionDate,
                 'profile_candles_count' => count($sessionOneMinute),
