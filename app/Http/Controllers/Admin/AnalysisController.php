@@ -7,6 +7,7 @@ use App\Http\Requests\AnalysisRequest;
 use App\Models\Analysis;
 use App\Models\Watchlist;
 use App\Services\Thndr\IntradayMultiTimeframeService;
+use App\Services\Thndr\FixedVolumeProfileService;
 use App\Services\Thndr\StockAnalysisService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
