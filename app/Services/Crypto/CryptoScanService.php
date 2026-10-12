@@ -66,7 +66,7 @@ class CryptoScanService
             'uuid' => $uuid,
             'crypto_watchlist_id' => $watchlist->id,
             'status' => 'running',
-            'settings_json' => ['exchange' => 'binance_spot', 'intervals' => ['15m', '1h', '4h'], 'strategy' => 'session_vwap_macd_volume'],
+            'settings_json' => ['exchange' => 'binance_spot', 'intervals' => ['1d', '1h', '30m', '15m', '5m', '1m'], 'entry_timeframes' => ['15m', '5m'], 'strategy' => 'VWAP_MACD'],
             'metadata_path' => $directory . '/metadata.json',
             'results_path' => $directory . '/results.json',
             'total_assets' => $watchlist->assets->count(),
