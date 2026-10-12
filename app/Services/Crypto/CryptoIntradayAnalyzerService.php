@@ -193,6 +193,8 @@ class CryptoIntradayAnalyzerService
             'relative_volume' => $rvol['rvol'],
             'volume_confirmed' => $rvol['rvol'] >= self::MIN_RVOL,
             'atr_14' => $this->atr($candles, 14),
+            'rsi' => $this->rsi($candles, 14),
+            'session_high' => $this->sessionHigh($candles),
             'candles' => $candles,
         ];
     }
