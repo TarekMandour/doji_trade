@@ -116,6 +116,15 @@
 
                 @endcanany
 
+                {{-- Crypto Spot Analysis (independent module) --}}
+                <div class="menu-item pt-2">
+                    <a class="menu-link {{ request()->routeIs('admin.crypto.*') ? 'active' : '' }}" href="{{ route('admin.crypto.index') }}">
+                        <span class="menu-icon"><i class="bi bi-currency-bitcoin"></i></span>
+                        <span class="menu-title">Crypto Spot Analysis</span>
+                        <span class="menu-arrow"></span>
+                    </a>
+                </div>
+
             </div>
             <!--end::Menu-->
         </div>
