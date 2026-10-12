@@ -160,7 +160,7 @@ class CryptoIntradayAnalyzerService
             'stop_loss' => $trade['stop_loss'],
             'target_1' => $trade['target_1'],
             'target_2' => $trade['target_2'],
-            'opportunity_score' => min(95, max(50, (int) round(65 + min(6, $trade['risk_reward_t1']) * 5)),
+            'opportunity_score' => min(95, max(50, (int) round(65 + min(6, $trade['risk_reward_t1']) * 5))),
             'risk_score' => min(100, max(1, (int) round((($trade['entry'] - $trade['stop_loss']) / $trade['entry']) * 1000))),
             'confidence_score' => 80,
             'reason' => 'Original VWAP_MACD strategy passed all four conditions on '.$selected['timeframe'].': price above Session VWAP, MACD above Signal, positive Histogram, and relative volume >= '.self::MIN_RVOL.'.',
