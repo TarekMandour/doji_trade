@@ -67,7 +67,7 @@ class CryptoScanService
             'uuid' => $uuid,
             'crypto_watchlist_id' => $watchlist->id,
             'status' => 'running',
-            'settings_json' => ['exchange' => 'binance_spot', 'intervals' => ['1h', '4h', '1d'], 'volume_profile_hours' => 24],
+            'settings_json' => ['exchange' => 'binance_spot', 'intervals' => ['1h', '4h', '1d'], 'volume_profile_hours' => 4],
             'metadata_path' => $directory . '/metadata.json',
             'results_path' => $directory . '/results.json',
             'total_assets' => $watchlist->assets->count(),
@@ -93,7 +93,7 @@ class CryptoScanService
                     }
 
                     $toMs = (int) floor(microtime(true) * 1000);
-                    $fromMs = $toMs - 24 * 60 * 60 * 1000;
+                    $fromMs = $toMs - 4 * 60 * 60 * 1000;
                     $tradeWindow = $this->get24HourTrades($asset->symbol, $fromMs, $toMs);
                     $profile = $this->volumeProfiles->build($tradeWindow['trades'], $asset->symbol, $fromMs, $toMs, $tradeWindow['complete']);
                     $profilePath = $directory . '/volume_profiles/' . $asset->symbol . '.json';
