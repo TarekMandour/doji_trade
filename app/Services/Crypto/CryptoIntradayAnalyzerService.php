@@ -159,11 +159,16 @@ class CryptoIntradayAnalyzerService
         $ema20 = $this->emaSeries($candles, self::EMA_TREND, 'close');
         $ema50 = $this->emaSeries($candles, self::EMA_SLOW, 'close');
         $slope20 = $ema20[$last] - $ema20[max(0, $last - 5)];
+        $structure = $this->simpleStructure($candles);
 
         $trendScore = 0;
         $trendScore += $candles[$last]['close'] > $ema20[$last] ? 2 : -2;
         $trendScore += $ema20[$last] > $ema50[$last] ? 2 : -2;
         $trendScore += $slope20 > 0 ? 1 : ($slope20 < 0 ? -1 : 0);
+        $trendScore += min(2, $structure['higher_highs']);
+        $trendScore += min(2, $structure['higher_lows']);
+        $trendScore -= min(2, $structure['lower_highs']);
+        $trendScore -= min(2, $structure['lower_lows']);
         $trend = $trendScore >= 3 ? 'BULLISH' : ($trendScore <= -3 ? 'BEARISH' : 'NEUTRAL');
 
         return [
@@ -173,6 +178,7 @@ class CryptoIntradayAnalyzerService
             'last_close' => $candles[$last]['close'],
             'trend' => $trend,
             'trend_score' => $trendScore,
+            'structure' => $structure,
             'ema_20' => $ema20[$last],
             'ema_50' => $ema50[$last],
             'vwap' => $vwap[$last],
@@ -186,6 +192,40 @@ class CryptoIntradayAnalyzerService
             'atr_14' => $this->atr($candles, 14),
             'candles' => $candles,
         ];
+    }
+
+    private function simpleStructure(array $candles): array
+    {
+        $count = count($candles);
+        $window = 3;
+        if ($count < ($window * 2) + 5) {
+            return ['higher_highs' => 0, 'higher_lows' => 0, 'lower_highs' => 0, 'lower_lows' => 0];
+        }
+
+        $highs = [];
+        $lows = [];
+        for ($i = $window; $i < $count - $window; $i++) {
+            $isHigh = true;
+            $isLow = true;
+            for ($j = $i - $window; $j <= $i + $window; $j++) {
+                if ($j === $i) continue;
+                if ($candles[$j]['high'] >= $candles[$i]['high']) $isHigh = false;
+                if ($candles[$j]['low'] <= $candles[$i]['low']) $isLow = false;
+            }
+            if ($isHigh) $highs[] = (float) $candles[$i]['high'];
+            if ($isLow) $lows[] = (float) $candles[$i]['low'];
+        }
+
+        $highs = array_slice($highs, -6);
+        $lows = array_slice($lows, -6);
+        $hh = $lh = $hl = $ll = 0;
+        for ($i = 1; $i < count($highs); $i++) {
+            $highs[$i] > $highs[$i - 1] ? $hh++ : $lh++;
+        }
+        for ($i = 1; $i < count($lows); $i++) {
+            $lows[$i] > $lows[$i - 1] ? $hl++ : $ll++;
+        }
+        return ['higher_highs' => $hh, 'higher_lows' => $hl, 'lower_highs' => $lh, 'lower_lows' => $ll];
     }
 
     private function buildHierarchy(array $tf): array
