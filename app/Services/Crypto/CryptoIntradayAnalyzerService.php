@@ -7,7 +7,7 @@ class CryptoIntradayAnalyzerService
     /**
      * Binance Spot adaptation of the proven intraday entry rule:
      * close above current UTC-session VWAP + MACD above signal + positive histogram
-     * + volume confirmation. Entry is evaluated on 15m candles; 1h/4h provide context.
+     * + volume confirmation. Entry is evaluated on 5m candles; 1m provides short-term detail and higher intervals provide context.
      */
     public function analyze(array $candlesByInterval): array
     {
@@ -17,7 +17,7 @@ class CryptoIntradayAnalyzerService
             }
         }
 
-        $entryCandles = array_values($candlesByInterval['15m']);
+        $entryCandles = array_values($candlesByInterval['5m']);
         // Binance kline format: open time, open, high, low, close, base volume, close time, quote volume...
         $nowMs = (int) floor(microtime(true) * 1000);
         $utcDayStart = (int) (strtotime(gmdate('Y-m-d 00:00:00')) * 1000);
@@ -25,18 +25,18 @@ class CryptoIntradayAnalyzerService
 
         // If current-day candles are missing (e.g. cache predates today's session), reject explicitly.
         if (count($session) < 3) {
-            return ['state' => 'rejected', 'signal_type' => null, 'reason' => 'Insufficient 15m candles for the current UTC session VWAP.'];
+            return ['state' => 'rejected', 'signal_type' => null, 'reason' => 'Insufficient 5m candles for the current UTC session VWAP.'];
         }
 
         // Exclude the currently forming candle from all indicators.
         $closed = array_values(array_filter($entryCandles, static fn ($c) => (int) $c[6] < $nowMs));
         if (count($closed) < 35) {
-            return ['state' => 'rejected', 'signal_type' => null, 'reason' => 'Not enough closed 15m candles to calculate MACD and volume.'];
+            return ['state' => 'rejected', 'signal_type' => null, 'reason' => 'Not enough closed 5m candles to calculate MACD and volume.'];
         }
 
         $session = array_values(array_filter($closed, static fn ($c) => (int) $c[0] >= $utcDayStart));
         if (count($session) < 3) {
-            return ['state' => 'rejected', 'signal_type' => null, 'reason' => 'Insufficient closed candles for current-session VWAP.'];
+            return ['state' => 'rejected', 'signal_type' => null, 'reason' => 'Insufficient closed 5m candles for current-session VWAP.'];
         }
 
         $weighted = 0.0;
@@ -79,7 +79,7 @@ class CryptoIntradayAnalyzerService
         $positiveHistogram = $histogram > 0;
 
         $conditions = [
-            'entry_timeframe' => '15m',
+            'entry_timeframe' => '5m',
             'available_timeframes' => ['1d', '1h', '30m', '15m', '5m', '1m'],
             'last_closed_5m_close' => (float) ($this->lastClosed(array_values($candlesByInterval['5m']), $nowMs)[4] ?? 0),
             'last_closed_1m_close' => (float) ($this->lastClosed(array_values($candlesByInterval['1m']), $nowMs)[4] ?? 0),
@@ -108,7 +108,7 @@ class CryptoIntradayAnalyzerService
             return [
                 'state' => 'rejected',
                 'signal_type' => null,
-                'reason' => implode('; ', $failed) . '.',
+                'reason' => implode('; ', $failed) . ' on 5m timeframe.',
                 'market' => $conditions + ['last_price' => $price],
             ];
         }
@@ -134,7 +134,7 @@ class CryptoIntradayAnalyzerService
             'opportunity_score' => $opportunity,
             'risk_score' => $riskScore,
             'confidence_score' => $confidence,
-            'reason' => 'Price above Session VWAP + MACD above Signal + positive Histogram + volume confirmation on the 15m timeframe.',
+            'reason' => 'Price above Session VWAP + MACD above Signal + positive Histogram + volume confirmation on the 5m timeframe.',
             'market' => $conditions + ['last_price' => $price],
         ];
     }
