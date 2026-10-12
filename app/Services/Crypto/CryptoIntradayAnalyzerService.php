@@ -227,7 +227,6 @@ class CryptoIntradayAnalyzerService
             'rsi' => $this->rsi($candles, 14),
             'stochastic_k' => $this->stochasticK($candles, 14),
             'session_high' => $this->sessionHigh($candles),
-            'candles' => $candles,
         ];
     }
 
