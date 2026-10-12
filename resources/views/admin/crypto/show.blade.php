@@ -8,7 +8,7 @@
     </div>
     <div class="ms-auto d-flex gap-2">
         <a href="{{ route('admin.crypto.index') }}" class="btn btn-light">Back</a>
-        <form method="POST" action="{{ route('admin.crypto.destroy', $run->uuid) }}" onsubmit="return confirm('Delete this scan and its result files? Shared candle cache will be retained.');">
+        <form method="POST" action="{{ route('admin.crypto.destroy', $run->uuid) }}" onsubmit="return confirm('Delete this scan's single JSON file and its database records?');">
             @csrf
             @method('DELETE')
             <button class="btn btn-danger" type="submit">Delete Scan</button>
