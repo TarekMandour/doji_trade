@@ -10,7 +10,7 @@ class CryptoVolumeProfileService
      * Build a volume profile from Binance aggregate trades, never from candle estimates.
      * Trades must cover the requested window; incomplete coverage is reported to the caller.
      */
-    public function build(array $trades, string $symbol, int $fromMs, int $toMs): array
+    public function build(array $trades, string $symbol, int $fromMs, int $toMs, bool $windowComplete): array
     {
         $byPrice = [];
         $firstTime = null;
@@ -75,8 +75,7 @@ class CryptoVolumeProfileService
                 'first_trade_ms' => $firstTime,
                 'last_trade_ms' => $lastTime,
                 'trade_count' => $tradeCount,
-                'complete' => $firstTime !== null && $lastTime !== null
-                    && $firstTime <= $fromMs + 60000 && $lastTime >= $toMs - 60000,
+                'complete' => $windowComplete && $firstTime !== null && $lastTime !== null,
             ],
             'volume_unit' => 'quote_asset',
             'total_quote_volume' => $totalVolume,
