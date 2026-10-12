@@ -1,8 +1,8 @@
 <?php
 
-namespace App\\Services\\Crypto;
+namespace App\Services\Crypto;
 
-use Illuminate\\Support\\Facades\\Storage;
+use Illuminate\Support\Facades\Storage;
 use RuntimeException;
 
 class CryptoJsonStorageService
