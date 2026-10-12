@@ -15,6 +15,9 @@ class CryptoIntradayAnalyzerService
     private const MACD_SIGNAL = 9;
     private const EMA_TREND = 20;
     private const EMA_SLOW = 50;
+    private const ROUND_TRIP_COST_PCT = 0.35;
+    private const MIN_NET_PROFIT_PCT = 0.8;
+    private const MIN_NET_RR = 1.2;
 
     private const TIMEFRAMES = [
         '1d' => ['minimum' => 60, 'weight' => 3],
