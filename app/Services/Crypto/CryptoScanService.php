@@ -205,7 +205,7 @@ class CryptoScanService
         $sessionCandles = (int) ceil($secondsSinceSessionStart / $config['seconds']) + 1;
 
         // Session VWAP needs all candles from UTC midnight. Other indicators need their warm-up history.
-        $required = max((int) $config['minimum'], $sessionCandles);
+        $required = max((int) $config['minimum'], $sessionCandles) + 1; // Include one extra bar because the current bar is still open.
         $endTime = $now->getTimestamp() * 1000;
         $startTime = ($endTime - ($required * $config['seconds'] * 1000));
 
