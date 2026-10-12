@@ -94,8 +94,8 @@ class CryptoScanService
 
                     $toMs = (int) floor(microtime(true) * 1000);
                     $fromMs = $toMs - 24 * 60 * 60 * 1000;
-                    $trades = $this->get24HourTrades($asset->symbol, $fromMs, $toMs);
-                    $profile = $this->volumeProfiles->build($trades, $asset->symbol, $fromMs, $toMs);
+                    $tradeWindow = $this->get24HourTrades($asset->symbol, $fromMs, $toMs);
+                    $profile = $this->volumeProfiles->build($tradeWindow['trades'], $asset->symbol, $fromMs, $toMs, $tradeWindow['complete']);
                     $profilePath = $directory . '/volume_profiles/' . $asset->symbol . '.json';
                     $this->storage->write($profilePath, $profile);
 
@@ -176,26 +176,37 @@ class CryptoScanService
     private function get24HourTrades(string $symbol, int $fromMs, int $toMs): array
     {
         $first = $this->binance->getAggregateTrades($symbol, null, $fromMs, $toMs, 1000);
-        if (!$first) throw new RuntimeException("No aggregate trades returned for {$symbol}.");
-
-        $trades = $first;
-        $lastId = (int) end($first)['a'];
-        $lastTime = (int) end($first)['T'];
-        $pages = 1;
-
-        while ($lastTime < $toMs && $pages < 100) {
-            $next = $this->binance->getAggregateTrades($symbol, $lastId + 1, null, null, 1000);
-            if (!$next) break;
-            $trades = array_merge($trades, $next);
-            $lastId = (int) end($next)['a'];
-            $lastTime = (int) end($next)['T'];
-            $pages++;
+        if (!$first) {
+            throw new RuntimeException("No aggregate trades returned for {$symbol}.");
         }
 
-        if ($pages >= 100 && $lastTime < $toMs - 60000) {
+        $trades = $first;
+        $last = end($first);
+        $lastId = (int) $last['a'];
+        $lastTime = (int) $last['T'];
+        $pages = 1;
+        $complete = count($first) < 1000 || $lastTime >= $toMs;
+
+        while (!$complete && $lastTime < $toMs && $pages < 100) {
+            $next = $this->binance->getAggregateTrades($symbol, $lastId + 1, null, null, 1000);
+            if (!$next) {
+                // No later aggregate trades exist for this symbol at the time of the query.
+                $complete = true;
+                break;
+            }
+
+            $trades = array_merge($trades, $next);
+            $last = end($next);
+            $lastId = (int) $last['a'];
+            $lastTime = (int) $last['T'];
+            $pages++;
+            $complete = count($next) < 1000 || $lastTime >= $toMs;
+        }
+
+        if (!$complete) {
             throw new RuntimeException("Trade pagination limit reached; 24-hour profile is incomplete for {$symbol}.");
         }
 
-        return $trades;
+        return ['trades' => $trades, 'complete' => true];
     }
 }
