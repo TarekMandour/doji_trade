@@ -202,12 +202,15 @@ class CryptoScanService
         $now = now('UTC');
         $sessionStart = $now->copy()->startOfDay();
         $secondsSinceSessionStart = max(0, $now->timestamp - $sessionStart->timestamp);
-        $sessionCandles = (int) ceil($secondsSinceSessionStart / $config['seconds']) + 1;
-
-        // Session VWAP needs all candles from UTC midnight. Other indicators need their warm-up history.
-        $required = max((int) $config['minimum'], $sessionCandles) + 1; // Include one extra bar because the current bar is still open.
+        // Session VWAP requires every candle from 00:00 UTC for the selected timeframe.
+        // EMA/MACD/ATR/RSI need their own warm-up history even when the session is short.
+        $sessionCandles = (int) floor($secondsSinceSessionStart / $config['seconds']) + 1;
+        $required = max((int) $config['minimum'], $sessionCandles) + 1; // Extra request allows us to discard the open candle.
         $endTime = $now->getTimestamp() * 1000;
-        $startTime = ($endTime - ($required * $config['seconds'] * 1000));
+        // Anchor to UTC session start when VWAP needs more history; otherwise include indicator warm-up bars.
+        $sessionStartMs = $sessionStart->getTimestamp() * 1000;
+        $warmupStartMs = $endTime - ($required * $config['seconds'] * 1000);
+        $startTime = $sessionCandles >= $config['minimum'] ? $sessionStartMs : $warmupStartMs;
 
         $candles = [];
         $cursor = $startTime;
