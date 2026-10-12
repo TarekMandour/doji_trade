@@ -197,6 +197,71 @@ class CryptoIntradayAnalyzerService
         ];
     }
 
+    private function buildTradePlan(array $signal, array $tf): array
+    {
+        $x = $tf[$signal['timeframe']];
+        $entry = (float) $tf['5m']['last_close'];
+        if ($entry <= 0) return ['valid' => false, 'reject_reason' => 'INVALID_PRICE'];
+        $atr = max((float) $x['atr_14'], (float) $tf['1d']['atr_14'] * 0.25, $entry * 0.003);
+        $stop = $entry - (1.2 * $atr);
+        if ($x['vwap'] > 0 && $x['vwap'] < $entry) $stop = max($stop, $x['vwap'] - (0.25 * $atr));
+        $stop = min($stop, $entry * 0.997);
+        if ($stop <= 0 || $stop >= $entry) return ['valid' => false, 'reject_reason' => 'INVALID_STOP_LOSS'];
+        $risk = $entry - $stop;
+        $target1 = $entry + (2.0 * $risk);
+        $target2 = $entry + (3.0 * $risk);
+        $high = (float) ($x['session_high'] ?? 0.0);
+        $capped = $high > $entry * 1.001 && $high < $target1;
+        if ($capped) { $target2 = $target1; $target1 = $high; }
+        $cost = $entry * (self::ROUND_TRIP_COST_PCT / 100);
+        $netPct = (($target1 - $entry - $cost) / $entry) * 100;
+        $rr1 = ($target1 - $entry - $cost) / ($risk + $cost);
+        $rr2 = ($target2 - $entry - $cost) / ($risk + $cost);
+        $reject = null;
+        if (($x['rsi'] ?? 0) >= 75) $reject = 'OVEREXTENDED_RSI';
+        elseif ($atr > 0 && (($entry - $x['vwap']) / $atr) > 3.0) $reject = 'OVEREXTENDED_FROM_VWAP';
+        elseif ($netPct < self::MIN_NET_PROFIT_PCT) $reject = $capped ? 'RESISTANCE_TOO_CLOSE' : 'PROFIT_TOO_SMALL_AFTER_COSTS';
+        elseif ($rr1 < self::MIN_NET_RR) $reject = $capped ? 'RESISTANCE_LIMITS_RISK_REWARD' : 'LOW_NET_RISK_REWARD';
+        return [
+            'valid' => $reject === null, 'reject_reason' => $reject,
+            'entry' => round($entry, 8), 'stop_loss' => round($stop, 8),
+            'target_1' => round($target1, 8), 'target_2' => round($target2, 8),
+            'risk_reward_t1' => round($rr1, 2), 'risk_reward_t2' => round($rr2, 2),
+            'net_profit_pct_t1' => round($netPct, 2), 'target_1_capped_at_session_high' => $capped,
+        ];
+    }
+
+    private function sessionHigh(array $candles): float
+    {
+        if ($candles === []) return 0.0;
+        $day = gmdate('Y-m-d', (int) $candles[count($candles) - 1]['timestamp']);
+        $high = 0.0;
+        for ($i = count($candles) - 1; $i >= 0; $i--) {
+            if (gmdate('Y-m-d', (int) $candles[$i]['timestamp']) !== $day) break;
+            $high = max($high, (float) $candles[$i]['high']);
+        }
+        return $high;
+    }
+
+    private function rsi(array $candles, int $period): ?float
+    {
+        $closes = array_column($candles, 'close');
+        if (count($closes) <= $period) return null;
+        $gain = $loss = 0.0;
+        for ($i = 1; $i <= $period; $i++) {
+            $change = $closes[$i] - $closes[$i - 1];
+            $gain += max(0.0, $change); $loss += max(0.0, -$change);
+        }
+        $avgGain = $gain / $period; $avgLoss = $loss / $period;
+        for ($i = $period + 1; $i < count($closes); $i++) {
+            $change = $closes[$i] - $closes[$i - 1];
+            $avgGain = (($avgGain * ($period - 1)) + max(0.0, $change)) / $period;
+            $avgLoss = (($avgLoss * ($period - 1)) + max(0.0, -$change)) / $period;
+        }
+        if ($avgLoss == 0.0) return 100.0;
+        return 100 - (100 / (1 + ($avgGain / $avgLoss)));
+    }
+
     private function simpleStructure(array $candles): array
     {
         $count = count($candles);
