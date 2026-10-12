@@ -25,6 +25,9 @@ class CryptoScanService
         $info = $this->binance->getSpotExchangeInfo();
         $synced = 0;
 
+        // Mark previously known pairs unavailable until confirmed by the latest exchange snapshot.
+        CryptoAsset::where('quote_asset', 'USDT')->update(['status' => 'BREAK']);
+
         foreach ($info['symbols'] ?? [] as $item) {
             if (($item['status'] ?? null) !== 'TRADING'
                 || ($item['quoteAsset'] ?? null) !== 'USDT'
