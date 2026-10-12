@@ -7,7 +7,7 @@ This is an isolated first-release module for manual Binance Spot analysis. It do
 - Binance Spot USDT pairs only.
 - Admin manually synchronizes the available Spot pairs and creates a crypto watchlist.
 - A Scan creates a new UUID-based run directory under Laravel's private local storage.
-- Candle caches are shared across scans; each scan owns its metadata, results, and trade-based volume profiles.
+- Candle caches are shared across scans; each scan owns its metadata, results, and Session VWAP + MACD + volume confirmations.
 - Analysis checks 1h, 4h, and 1d trend alignment and uses aggregate trades for a 4-hour price/volume profile.
 - No orders are submitted. Bearish signals are informational only because this module does not short Spot assets.
 
@@ -19,7 +19,7 @@ This is an isolated first-release module for manual Binance Spot analysis. It do
 - `scans/{uuid}/metadata.json`: scan state and settings.
 - `scans/{uuid}/results.json`: scan result summary.
 - `scans/{uuid}/results/{symbol}.json`: per-pair result details.
-- `scans/{uuid}/volume_profiles/{symbol}.json`: trade-derived volume profile.
+- `scans/{uuid}/volume_profiles/{symbol}.json`: indicator diagnostics.
 
 Each JSON payload carries a schema version and data/update timestamps. Scan deletion is constrained to its own `crypto/scans/{uuid}` directory; shared candle caches are retained.
 
