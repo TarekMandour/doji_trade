@@ -2,169 +2,316 @@
 
 namespace App\Services\Crypto;
 
+/**
+ * Binance Spot port of the VWAP_MACD strategy in IntradayMultiTimeframeService.
+ * Binance klines are normalized here into the same OHLCV shape used by the EGX engine.
+ */
 class CryptoIntradayAnalyzerService
 {
-    /**
-     * Binance Spot adaptation of the proven intraday entry rule:
-     * close above current UTC-session VWAP + MACD above signal + positive histogram
-     * + volume confirmation. Entry is evaluated on 5m candles; 1m provides short-term detail and higher intervals provide context.
-     */
+    private const MIN_RVOL = 1.05;
+    private const VOLUME_PERIOD = 20;
+    private const MACD_FAST = 12;
+    private const MACD_SLOW = 26;
+    private const MACD_SIGNAL = 9;
+    private const EMA_TREND = 20;
+    private const EMA_SLOW = 50;
+
+    private const TIMEFRAMES = [
+        '1d' => ['minimum' => 60, 'weight' => 3],
+        '1h' => ['minimum' => 80, 'weight' => 2],
+        '30m' => ['minimum' => 80, 'weight' => 1],
+        '15m' => ['minimum' => 80, 'weight' => 1],
+        '5m' => ['minimum' => 100, 'weight' => 1],
+        '1m' => ['minimum' => 150, 'weight' => 1],
+    ];
+
     public function analyze(array $candlesByInterval): array
     {
-        foreach (['15m' => 35, '5m' => 60, '1m' => 60, '1h' => 60, '4h' => 60, '30m' => 60, '1d' => 30] as $interval => $minimum) {
-            if (count($candlesByInterval[$interval] ?? []) < $minimum) {
-                return ['state' => 'rejected', 'signal_type' => null, 'reason' => "Insufficient {$interval} candle history."];
-            }
-        }
-
-        $entryCandles = array_values($candlesByInterval['5m']);
-        // Binance kline format: open time, open, high, low, close, base volume, close time, quote volume...
         $nowMs = (int) floor(microtime(true) * 1000);
-        $utcDayStart = (int) (strtotime(gmdate('Y-m-d 00:00:00')) * 1000);
-        $session = array_values(array_filter($entryCandles, static fn ($c) => (int) $c[0] >= $utcDayStart && (int) $c[6] < $nowMs));
+        $timeframes = [];
+        $dataErrors = [];
 
-        // If current-day candles are missing (e.g. cache predates today's session), reject explicitly.
-        if (count($session) < 3) {
-            return ['state' => 'rejected', 'signal_type' => null, 'reason' => 'Insufficient 5m candles for the current UTC session VWAP.'];
+        foreach (self::TIMEFRAMES as $interval => $config) {
+            $raw = array_values($candlesByInterval[$interval] ?? []);
+            $closed = array_values(array_filter($raw, static function ($candle) use ($nowMs) {
+                return isset($candle[0], $candle[6]) && (int) $candle[6] < $nowMs;
+            }));
+
+            if (count($closed) < $config['minimum']) {
+                $dataErrors[$interval] = [
+                    'required' => $config['minimum'],
+                    'received_closed' => count($closed),
+                ];
+                continue;
+            }
+
+            $normalized = array_map(static fn ($c) => [
+                'timestamp' => (int) floor((int) $c[0] / 1000),
+                'open' => (float) $c[1],
+                'high' => (float) $c[2],
+                'low' => (float) $c[3],
+                'close' => (float) $c[4],
+                'volume' => (float) $c[5],
+            ], $closed);
+
+            $timeframes[$interval] = $this->analyzeTimeframe($normalized, $interval);
         }
 
-        // Exclude the currently forming candle from all indicators.
-        $closed = array_values(array_filter($entryCandles, static fn ($c) => (int) $c[6] < $nowMs));
-        if (count($closed) < 35) {
-            return ['state' => 'rejected', 'signal_type' => null, 'reason' => 'Not enough closed 5m candles to calculate MACD and volume.'];
-        }
-
-        $session = array_values(array_filter($closed, static fn ($c) => (int) $c[0] >= $utcDayStart));
-        if (count($session) < 3) {
-            return ['state' => 'rejected', 'signal_type' => null, 'reason' => 'Insufficient closed 5m candles for current-session VWAP.'];
-        }
-
-        $weighted = 0.0;
-        $volumeSum = 0.0;
-        foreach ($session as $candle) {
-            $typical = ((float) $candle[2] + (float) $candle[3] + (float) $candle[4]) / 3;
-            $volume = (float) $candle[5];
-            $weighted += $typical * $volume;
-            $volumeSum += $volume;
-        }
-        if ($volumeSum <= 0) {
-            return ['state' => 'rejected', 'signal_type' => null, 'reason' => 'Session volume is zero; VWAP cannot be calculated.'];
-        }
-        $vwap = $weighted / $volumeSum;
-
-        $closes = array_map(static fn ($c) => (float) $c[4], $closed);
-        $macd = $this->macd($closes);
-        $last = count($closed) - 1;
-        $price = $closes[$last];
-        $macdLine = $macd['line'][$last];
-        $signalLine = $macd['signal'][$last];
-        $histogram = $macdLine - $signalLine;
-
-        $volumes = array_map(static fn ($c) => (float) $c[5], $closed);
-        $recentVolumes = array_slice($volumes, -21, 20);
-        $averageVolume = count($recentVolumes) ? array_sum($recentVolumes) / count($recentVolumes) : 0;
-        $currentVolume = $volumes[$last];
-        $volumeConfirmed = $averageVolume > 0 && $currentVolume >= $averageVolume * 1.05;
-
-        $oneHour = array_values($candlesByInterval['1h']);
-        $fourHour = array_values($candlesByInterval['4h']);
-        $last1h = $this->lastClosed($oneHour, $nowMs);
-        $last4h = $this->lastClosed($fourHour, $nowMs);
-        if (!$last1h || !$last4h) {
-            return ['state' => 'rejected', 'signal_type' => null, 'reason' => 'No closed 1h/4h candles available for context.'];
-        }
-
-        $priceAboveVwap = $price > $vwap;
-        $macdAboveSignal = $macdLine > $signalLine;
-        $positiveHistogram = $histogram > 0;
-
-        $conditions = [
-            'entry_timeframe' => '5m',
-            'available_timeframes' => ['1d', '1h', '30m', '15m', '5m', '1m'],
-            'last_closed_5m_close' => (float) ($this->lastClosed(array_values($candlesByInterval['5m']), $nowMs)[4] ?? 0),
-            'last_closed_1m_close' => (float) ($this->lastClosed(array_values($candlesByInterval['1m']), $nowMs)[4] ?? 0),
-            'price_above_session_vwap' => $priceAboveVwap,
-            'macd_above_signal' => $macdAboveSignal,
-            'positive_histogram' => $positiveHistogram,
-            'volume_confirmed' => $volumeConfirmed,
-            'session_vwap_utc' => $vwap,
-            'macd' => $macdLine,
-            'macd_signal' => $signalLine,
-            'macd_histogram' => $histogram,
-            'current_volume' => $currentVolume,
-            'average_volume_20' => $averageVolume,
-            'volume_ratio' => $averageVolume > 0 ? $currentVolume / $averageVolume : null,
-            'context_1h_close' => (float) $last1h[4],
-            'context_4h_close' => (float) $last4h[4],
-        ];
-
-        if (!$priceAboveVwap || !$macdAboveSignal || !$positiveHistogram || !$volumeConfirmed) {
-            $failed = [];
-            if (!$priceAboveVwap) $failed[] = 'price is not above Session VWAP';
-            if (!$macdAboveSignal) $failed[] = 'MACD is not above Signal';
-            if (!$positiveHistogram) $failed[] = 'MACD histogram is not positive';
-            if (!$volumeConfirmed) $failed[] = 'volume confirmation failed';
-
+        if ($dataErrors !== []) {
+            $missing = implode(', ', array_keys($dataErrors));
             return [
                 'state' => 'rejected',
                 'signal_type' => null,
-                'reason' => implode('; ', $failed) . ' on 5m timeframe.',
-                'market' => $conditions + ['last_price' => $price],
+                'reason' => "Insufficient closed candle history: {$missing}.",
+                'data_errors' => $dataErrors,
+                'timeframes' => $timeframes,
             ];
         }
 
-        $recent = array_slice($closed, -20);
-        $swingLow = min(array_map(static fn ($c) => (float) $c[3], $recent));
-        $risk = $price - $swingLow;
-        if ($risk <= 0) {
-            return ['state' => 'rejected', 'signal_type' => null, 'reason' => 'Could not calculate a valid stop loss below entry.'];
+        $hierarchy = $this->buildHierarchy($timeframes);
+        $higherContext = $this->higherContext($timeframes, $hierarchy);
+        $nearMiss = null;
+        $selected = null;
+
+        // Mirrors the original service order: 15m first, then 5m.
+        foreach (['15m', '5m'] as $interval) {
+            $x = $timeframes[$interval];
+            $conditions = [
+                'price_above_vwap' => $x['last_close'] > $x['vwap'],
+                'macd_above_signal' => $x['macd'] > $x['macd_signal'],
+                'histogram_positive' => $x['macd_histogram'] > 0,
+                'volume_confirmed' => $x['volume_confirmed'],
+                'timeframe_trend_support' => in_array($x['trend'], ['BULLISH', 'NEUTRAL'], true),
+                'higher_timeframe_context' => $higherContext,
+            ];
+            $passed = count(array_filter($conditions)) ;
+            if ($nearMiss === null || $passed > $nearMiss['passed']) {
+                $nearMiss = ['timeframe' => $interval, 'passed' => $passed, 'conditions' => $conditions];
+            }
+
+            if (!in_array(false, $conditions, true)) {
+                $selected = ['timeframe' => $interval, 'conditions' => $conditions];
+                break;
+            }
         }
 
-        $confidence = 80;
-        $opportunity = min(100, 70 + (int) round(min(30, (($currentVolume / max($averageVolume, 0.00000001)) - 1) * 20)));
-        $riskScore = min(100, max(1, (int) round(($risk / max($price, 0.00000001)) * 1000)));
+        $latest5m = $timeframes['5m']['last_close'];
+        $base = [
+            'strategy' => 'VWAP_MACD',
+            'timeframes' => $timeframes,
+            'hierarchy' => $hierarchy,
+            'diagnostics' => [
+                'tested_entry_timeframes' => ['15m', '5m'],
+                'near_miss' => $nearMiss,
+                'higher_timeframe_context' => $higherContext,
+            ],
+        ];
 
-        return [
+        if ($selected === null) {
+            $failed = [];
+            foreach ($nearMiss['conditions'] as $condition => $passed) {
+                if (!$passed) $failed[] = $condition;
+            }
+            return $base + [
+                'state' => 'rejected',
+                'signal_type' => null,
+                'reason' => 'VWAP_MACD conditions failed on '.$nearMiss['timeframe'].': '.implode(', ', $failed).'.',
+                'market' => ['last_price' => $latest5m, 'entry_timeframe' => $nearMiss['timeframe']],
+            ];
+        }
+
+        $entry = $latest5m;
+        $recent = array_slice($timeframes['5m']['candles'], -20);
+        $swingLow = min(array_column($recent, 'low'));
+        $atr = max($timeframes[$selected['timeframe']]['atr_14'], $timeframes['1d']['atr_14'] * 0.25, $entry * 0.003);
+        $stop = min($swingLow, $entry - ($atr * 1.2));
+        if ($stop <= 0 || $stop >= $entry) {
+            $stop = $entry - ($entry * 0.005);
+        }
+        $risk = $entry - $stop;
+
+        return $base + [
             'state' => 'accepted',
-            'signal_type' => 'vwap_macd_volume',
-            'entry_price' => $price,
-            'stop_loss' => $swingLow,
-            'target_1' => $price + ($risk * 1.5),
-            'target_2' => $price + ($risk * 2.5),
-            'opportunity_score' => $opportunity,
-            'risk_score' => $riskScore,
-            'confidence_score' => $confidence,
-            'reason' => 'Price above Session VWAP + MACD above Signal + positive Histogram + volume confirmation on the 5m timeframe.',
-            'market' => $conditions + ['last_price' => $price],
+            'signal_type' => 'VWAP_MACD',
+            'entry_price' => $entry,
+            'stop_loss' => $stop,
+            'target_1' => $entry + ($risk * 2.0),
+            'target_2' => $entry + ($risk * 3.0),
+            'opportunity_score' => 85,
+            'risk_score' => min(100, max(1, (int) round(($risk / $entry) * 1000))),
+            'confidence_score' => 85,
+            'reason' => 'Price above Session VWAP + MACD above Signal + positive Histogram + volume confirmation on '.$selected['timeframe'].'.',
+            'market' => [
+                'last_price' => $entry,
+                'entry_timeframe' => $selected['timeframe'],
+                'entry_conditions' => $selected['conditions'],
+                'session_vwap_utc' => $timeframes[$selected['timeframe']]['vwap'],
+            ],
         ];
     }
 
-    private function lastClosed(array $candles, int $nowMs): ?array
+    private function analyzeTimeframe(array $candles, string $interval): array
     {
-        for ($i = count($candles) - 1; $i >= 0; $i--) {
-            if (isset($candles[$i][6]) && (int) $candles[$i][6] < $nowMs) return $candles[$i];
+        $last = count($candles) - 1;
+        $macd = $this->macdSeries($candles);
+        $vwap = $this->sessionVwapSeries($candles);
+        $rvol = $this->relativeVolume($candles);
+        $ema20 = $this->emaSeries($candles, self::EMA_TREND, 'close');
+        $ema50 = $this->emaSeries($candles, self::EMA_SLOW, 'close');
+        $slope20 = $ema20[$last] - $ema20[max(0, $last - 5)];
+
+        $trendScore = 0;
+        $trendScore += $candles[$last]['close'] > $ema20[$last] ? 2 : -2;
+        $trendScore += $ema20[$last] > $ema50[$last] ? 2 : -2;
+        $trendScore += $slope20 > 0 ? 1 : ($slope20 < 0 ? -1 : 0);
+        $trend = $trendScore >= 3 ? 'BULLISH' : ($trendScore <= -3 ? 'BEARISH' : 'NEUTRAL');
+
+        return [
+            'timeframe' => $interval,
+            'candles_count' => count($candles),
+            'last_timestamp' => $candles[$last]['timestamp'],
+            'last_close' => $candles[$last]['close'],
+            'trend' => $trend,
+            'trend_score' => $trendScore,
+            'ema_20' => $ema20[$last],
+            'ema_50' => $ema50[$last],
+            'vwap' => $vwap[$last],
+            'macd' => $macd['macd'][$last],
+            'macd_signal' => $macd['signal'][$last],
+            'macd_histogram' => $macd['histogram'][$last],
+            'volume' => $candles[$last]['volume'],
+            'average_volume' => $rvol['average'],
+            'relative_volume' => $rvol['rvol'],
+            'volume_confirmed' => $rvol['rvol'] >= self::MIN_RVOL,
+            'atr_14' => $this->atr($candles, 14),
+            'candles' => $candles,
+        ];
+    }
+
+    private function buildHierarchy(array $tf): array
+    {
+        $weights = array_column(self::TIMEFRAMES, 'weight');
+        $max = array_sum($weights);
+        $score = 0;
+        $details = [];
+        foreach (self::TIMEFRAMES as $name => $config) {
+            $trend = $tf[$name]['trend'];
+            $contribution = $trend === 'BULLISH' ? $config['weight'] : ($trend === 'BEARISH' ? -$config['weight'] : 0);
+            $score += $contribution;
+            $details[$name] = ['trend' => $trend, 'weight' => $config['weight'], 'contribution' => $contribution];
         }
-        return null;
+        $ratio = $score / max(1, $max);
+        return [
+            'score' => $score,
+            'max_score' => $max,
+            'bias' => $ratio >= 0.30 ? 'BULLISH' : ($ratio <= -0.30 ? 'BEARISH' : 'NEUTRAL'),
+            'details' => $details,
+            'entry_allowed' => $score > 0,
+        ];
     }
 
-    private function macd(array $values): array
+    private function higherContext(array $tf, array $hierarchy): bool
     {
-        $fast = $this->emaSeries($values, 12);
-        $slow = $this->emaSeries($values, 26);
-        $line = [];
-        foreach ($values as $i => $_) $line[] = $fast[$i] - $slow[$i];
-        return ['line' => $line, 'signal' => $this->emaSeries($line, 9)];
+        if (!$hierarchy['entry_allowed'] || !in_array($hierarchy['bias'], ['BULLISH', 'NEUTRAL'], true)) return false;
+        foreach (['1d', '1h', '30m'] as $name) {
+            if ($tf[$name]['trend'] === 'BEARISH') return false;
+        }
+        return true;
     }
 
-    private function emaSeries(array $values, int $period): array
+    private function sessionVwapSeries(array $candles): array
     {
-        $alpha = 2 / ($period + 1);
-        $ema = (float) ($values[0] ?? 0);
         $result = [];
-        foreach ($values as $i => $value) {
-            $ema = $i === 0 ? (float) $value : ((float) $value * $alpha) + ($ema * (1 - $alpha));
-            $result[] = $ema;
+        $session = null;
+        $cumPv = 0.0;
+        $cumVolume = 0.0;
+        foreach ($candles as $i => $c) {
+            // Crypto trades 24/7: define a stable UTC calendar-day session.
+            $day = gmdate('Y-m-d', $c['timestamp']);
+            if ($day !== $session) {
+                $session = $day;
+                $cumPv = 0.0;
+                $cumVolume = 0.0;
+            }
+            $typical = ($c['high'] + $c['low'] + $c['close']) / 3;
+            $volume = max(0.0, $c['volume']);
+            $cumPv += $typical * $volume;
+            $cumVolume += $volume;
+            $result[$i] = $cumVolume > 0 ? $cumPv / $cumVolume : $typical;
         }
         return $result;
+    }
+
+    private function relativeVolume(array $candles): array
+    {
+        $last = count($candles) - 1;
+        if ($last < self::VOLUME_PERIOD) return ['average' => 0.0, 'rvol' => 0.0];
+        $previous = array_slice($candles, $last - self::VOLUME_PERIOD, self::VOLUME_PERIOD);
+        $average = array_sum(array_column($previous, 'volume')) / self::VOLUME_PERIOD;
+        $current = $candles[$last]['volume'];
+        return ['average' => $average, 'rvol' => $average > 0 ? $current / $average : 0.0];
+    }
+
+    private function macdSeries(array $candles): array
+    {
+        $fast = $this->emaSeries($candles, self::MACD_FAST, 'close');
+        $slow = $this->emaSeries($candles, self::MACD_SLOW, 'close');
+        $macd = array_fill(0, count($candles), null);
+        foreach ($candles as $i => $_) {
+            if ($fast[$i] !== null && $slow[$i] !== null) $macd[$i] = $fast[$i] - $slow[$i];
+        }
+        $signal = $this->emaNullable($macd, self::MACD_SIGNAL);
+        $histogram = array_fill(0, count($candles), null);
+        foreach ($candles as $i => $_) {
+            if ($macd[$i] !== null && $signal[$i] !== null) $histogram[$i] = $macd[$i] - $signal[$i];
+        }
+        return ['macd' => $macd, 'signal' => $signal, 'histogram' => $histogram];
+    }
+
+    private function emaSeries(array $candles, int $period, string $field): array
+    {
+        $values = array_map(static fn ($c) => (float) $c[$field], $candles);
+        $result = array_fill(0, count($values), null);
+        if (count($values) < $period) return $result;
+        $seed = array_sum(array_slice($values, 0, $period)) / $period;
+        $result[$period - 1] = $seed;
+        $multiplier = 2 / ($period + 1);
+        for ($i = $period; $i < count($values); $i++) {
+            $result[$i] = (($values[$i] - $result[$i - 1]) * $multiplier) + $result[$i - 1];
+        }
+        return $result;
+    }
+
+    private function emaNullable(array $values, int $period): array
+    {
+        $result = array_fill(0, count($values), null);
+        $valid = [];
+        foreach ($values as $i => $value) if ($value !== null) $valid[] = ['index' => $i, 'value' => (float) $value];
+        if (count($valid) < $period) return $result;
+        $seedValues = array_slice($valid, 0, $period);
+        $previous = array_sum(array_column($seedValues, 'value')) / $period;
+        $seedIndex = $seedValues[$period - 1]['index'];
+        $result[$seedIndex] = $previous;
+        $multiplier = 2 / ($period + 1);
+        for ($i = $period; $i < count($valid); $i++) {
+            $previous = (($valid[$i]['value'] - $previous) * $multiplier) + $previous;
+            $result[$valid[$i]['index']] = $previous;
+        }
+        return $result;
+    }
+
+    private function atr(array $candles, int $period): float
+    {
+        if (count($candles) <= $period) return 0.0;
+        $ranges = [];
+        for ($i = 1; $i < count($candles); $i++) {
+            $ranges[] = max(
+                $candles[$i]['high'] - $candles[$i]['low'],
+                abs($candles[$i]['high'] - $candles[$i - 1]['close']),
+                abs($candles[$i]['low'] - $candles[$i - 1]['close'])
+            );
+        }
+        $slice = array_slice($ranges, -$period);
+        return array_sum($slice) / count($slice);
     }
 }
