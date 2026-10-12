@@ -126,12 +126,12 @@ Route::middleware('setLocale')->group(function () {
 
         // ── Crypto Spot Analysis (isolated from EGX analysis) ────────────────
         Route::name('crypto.')->prefix('crypto')->group(function () {
-            Route::get('/', [\\App\\Http\\Controllers\\Admin\\CryptoController::class, 'index'])->name('index');
-            Route::post('/sync-assets', [\\App\\Http\\Controllers\\Admin\\CryptoController::class, 'syncAssets'])->name('sync-assets');
-            Route::post('/watchlists', [\\App\\Http\\Controllers\\Admin\\CryptoController::class, 'storeWatchlist'])->name('watchlists.store');
-            Route::post('/watchlists/{id}/scan', [\\App\\Http\\Controllers\\Admin\\CryptoController::class, 'run'])->name('run');
-            Route::get('/scans/{uuid}', [\\App\\Http\\Controllers\\Admin\\CryptoController::class, 'show'])->name('show');
-            Route::delete('/scans/{uuid}', [\\App\\Http\\Controllers\\Admin\\CryptoController::class, 'destroy'])->name('destroy');
+            Route::get('/', [\App\Http\Controllers\Admin\CryptoController::class, 'index'])->name('index');
+            Route::post('/sync-assets', [\App\Http\Controllers\Admin\CryptoController::class, 'syncAssets'])->name('sync-assets');
+            Route::post('/watchlists', [\App\Http\Controllers\Admin\CryptoController::class, 'storeWatchlist'])->name('watchlists.store');
+            Route::post('/watchlists/{id}/scan', [\App\Http\Controllers\Admin\CryptoController::class, 'run'])->name('run');
+            Route::get('/scans/{uuid}', [\App\Http\Controllers\Admin\CryptoController::class, 'show'])->name('show');
+            Route::delete('/scans/{uuid}', [\App\Http\Controllers\Admin\CryptoController::class, 'destroy'])->name('destroy');
         });
 
     });
