@@ -85,12 +85,14 @@ class CryptoController extends Controller
     public function destroy(string $uuid, CryptoJsonStorageService $storage)
     {
         $run = CryptoScanRun::where('uuid', $uuid)->firstOrFail();
-        $directory = $storage->scanDirectory($run->uuid);
+        $filePath = $run->results_path ?: $run->metadata_path;
 
-        // Only this run's folder is removed. Shared candle cache is deliberately preserved.
-        $storage->deleteDirectory($directory);
+        // Delete only this run's single JSON file; no shared candle cache is used or touched.
+        if ($filePath) {
+            $storage->deleteScanFile($filePath);
+        }
         $run->delete();
 
-        return redirect()->route('admin.crypto.index')->with('message', 'Scan and its result files deleted. Shared candles were retained.')->with('status', 'success');
+        return redirect()->route('admin.crypto.index')->with('message', 'Scan JSON file and its database records deleted.')->with('status', 'success');
     }
 }
