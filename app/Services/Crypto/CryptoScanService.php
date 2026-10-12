@@ -146,7 +146,7 @@ class CryptoScanService
         $path = $this->storage->candlePath($symbol, $interval, $date);
         $cached = $this->storage->read($path);
         if ($cached && !empty($cached['last_updated_at'])
-            && \\Illuminate\\Support\\Carbon::parse($cached['last_updated_at'])->gt(now()->subMinutes(5))
+            && \Illuminate\Support\Carbon::parse($cached['last_updated_at'])->gt(now()->subMinutes(5))
             && count($cached['candles'] ?? []) >= 60) {
             return $cached['candles'];
         }
