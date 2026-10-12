@@ -15,7 +15,6 @@ class CryptoScanService
     public function __construct(
         private readonly BinanceApiService $binance,
         private readonly CryptoJsonStorageService $storage,
-        private readonly CryptoVolumeProfileService $volumeProfiles,
         private readonly CryptoIntradayAnalyzerService $analyzer,
         private readonly CryptoScanPersistenceService $persistence,
     ) {}
@@ -67,7 +66,7 @@ class CryptoScanService
             'uuid' => $uuid,
             'crypto_watchlist_id' => $watchlist->id,
             'status' => 'running',
-            'settings_json' => ['exchange' => 'binance_spot', 'intervals' => ['1h', '4h', '1d'], 'volume_profile_hours' => 4],
+            'settings_json' => ['exchange' => 'binance_spot', 'intervals' => ['15m', '1h', '4h'], 'strategy' => 'session_vwap_macd_volume'],
             'metadata_path' => $directory . '/metadata.json',
             'results_path' => $directory . '/results.json',
             'total_assets' => $watchlist->assets->count(),
@@ -88,20 +87,13 @@ class CryptoScanService
             foreach ($watchlist->assets as $asset) {
                 try {
                     $candles = [];
-                    foreach (['1h' => '1h', '4h' => '4h', '1d' => '1d'] as $interval => $binanceInterval) {
+                    foreach (['15m' => '15m', '1h' => '1h', '4h' => '4h'] as $interval => $binanceInterval) {
                         $candles[$interval] = $this->getCandles($asset->symbol, $interval, $binanceInterval);
                     }
 
-                    $toMs = (int) floor(microtime(true) * 1000);
-                    $fromMs = $toMs - 4 * 60 * 60 * 1000;
-                    $tradeWindow = $this->get24HourTrades($asset->symbol, $fromMs, $toMs);
-                    $profile = $this->volumeProfiles->build($tradeWindow['trades'], $asset->symbol, $fromMs, $toMs, $tradeWindow['complete']);
-                    $profilePath = $directory . '/volume_profiles/' . $asset->symbol . '.json';
-                    $this->storage->write($profilePath, $profile);
-
-                    $result = $this->analyzer->analyze($candles, $profile);
+                    // The entry strategy uses candle data only. No aggregate-trade pagination.
+                    $result = $this->analyzer->analyze($candles);
                     $result['symbol'] = $asset->symbol;
-                    $result['volume_profile_path'] = $profilePath;
                     $result['analyzed_at'] = now()->toIso8601String();
                     $resultPath = $directory . '/results/' . $asset->symbol . '.json';
                     $this->storage->write($resultPath, $result);
@@ -173,51 +165,5 @@ class CryptoScanService
         return $candles;
     }
 
-    private function get24HourTrades(string $symbol, int $fromMs, int $toMs): array
-    {
-        // Binance aggTrades returns at most 1,000 rows per request. Split busy time
-        // windows recursively instead of walking a fixed number of ID pages.
-        $trades = $this->fetchTradeWindow($symbol, $fromMs, $toMs, 0);
 
-        if (!$trades) {
-            throw new RuntimeException("No aggregate trades returned for {$symbol}.");
-        }
-
-        // Deduplicate by aggregate trade ID in case an exchange boundary is repeated.
-        $unique = [];
-        foreach ($trades as $trade) {
-            if (isset($trade['a'], $trade['T']) && (int) $trade['T'] >= $fromMs && (int) $trade['T'] <= $toMs) {
-                $unique[(string) $trade['a']] = $trade;
-            }
-        }
-
-        if (!$unique) {
-            throw new RuntimeException("No aggregate trades in the requested 24-hour window for {$symbol}.");
-        }
-
-        return ['trades' => array_values($unique), 'complete' => true];
-    }
-
-    /**
-     * Fetch every aggregate trade in a time window. A full 1,000-row response
-     * may be truncated, so divide that window until each segment fits in one page.
-     */
-    private function fetchTradeWindow(string $symbol, int $fromMs, int $toMs, int $depth): array
-    {
-        $rows = $this->binance->getAggregateTrades($symbol, null, $fromMs, $toMs, 1000);
-
-        if (count($rows) < 1000) {
-            return $rows;
-        }
-
-        if ($depth >= 24 || $fromMs >= $toMs) {
-            throw new RuntimeException("Could not safely partition Binance aggregate trades for {$symbol}; retry the scan later.");
-        }
-
-        $middle = intdiv($fromMs + $toMs, 2);
-        $left = $this->fetchTradeWindow($symbol, $fromMs, $middle, $depth + 1);
-        $right = $this->fetchTradeWindow($symbol, $middle + 1, $toMs, $depth + 1);
-
-        return array_merge($left, $right);
-    }
 }
