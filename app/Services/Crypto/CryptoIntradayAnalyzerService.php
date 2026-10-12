@@ -11,7 +11,7 @@ class CryptoIntradayAnalyzerService
      */
     public function analyze(array $candlesByInterval): array
     {
-        foreach (['15m' => 35, '1h' => 60, '4h' => 60] as $interval => $minimum) {
+        foreach (['15m' => 35, '5m' => 60, '1m' => 60, '1h' => 60, '4h' => 60, '30m' => 60, '1d' => 30] as $interval => $minimum) {
             if (count($candlesByInterval[$interval] ?? []) < $minimum) {
                 return ['state' => 'rejected', 'signal_type' => null, 'reason' => "Insufficient {$interval} candle history."];
             }
@@ -80,6 +80,9 @@ class CryptoIntradayAnalyzerService
 
         $conditions = [
             'entry_timeframe' => '15m',
+            'available_timeframes' => ['1d', '1h', '30m', '15m', '5m', '1m'],
+            'last_closed_5m_close' => (float) ($this->lastClosed(array_values($candlesByInterval['5m']), $nowMs)[4] ?? 0),
+            'last_closed_1m_close' => (float) ($this->lastClosed(array_values($candlesByInterval['1m']), $nowMs)[4] ?? 0),
             'price_above_session_vwap' => $priceAboveVwap,
             'macd_above_signal' => $macdAboveSignal,
             'positive_histogram' => $positiveHistogram,
