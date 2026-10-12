@@ -1,11 +1,11 @@
 <?php
 
-namespace App\\Services\\Crypto;
+namespace App\Services\Crypto;
 
-use App\\Models\\CryptoAsset;
-use App\\Models\\CryptoScanRun;
-use App\\Models\\CryptoWatchlist;
-use Illuminate\\Support\\Str;
+use App\Models\CryptoAsset;
+use App\Models\CryptoScanRun;
+use App\Models\CryptoWatchlist;
+use Illuminate\Support\Str;
 use RuntimeException;
 use Throwable;
 
