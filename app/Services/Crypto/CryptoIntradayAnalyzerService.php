@@ -18,6 +18,12 @@ class CryptoIntradayAnalyzerService
     private const ROUND_TRIP_COST_PCT = 0.35;
     private const MIN_NET_PROFIT_PCT = 0.8;
     private const MIN_NET_RR = 1.2;
+    private const MAX_STALE_SECONDS = 1200;
+    private const MAX_ENTRY_RSI = 75;
+    private const MAX_VWAP_EXTENSION_ATR = 3.0;
+    private const NEAR_HIGH_PCT = 0.2;
+    private const NEAR_HIGH_RSI = 70;
+    private const NEAR_HIGH_STOCH = 90;
 
     private const TIMEFRAMES = [
         '1d' => ['minimum' => 60, 'weight' => 3],
@@ -67,6 +73,20 @@ class CryptoIntradayAnalyzerService
                 'signal_type' => null,
                 'reason' => "Insufficient closed candle history: {$missing}.",
                 'data_errors' => $dataErrors,
+                'timeframes' => $timeframes,
+            ];
+        }
+
+        // Crypto is a 24/7 market: still reject data that is too old to represent a current entry.
+        $latest5mTimestamp = (int) ($timeframes['5m']['last_timestamp'] ?? 0);
+        $staleSeconds = $latest5mTimestamp > 0 ? max(0, time() - $latest5mTimestamp) : PHP_INT_MAX;
+        if ($staleSeconds > self::MAX_STALE_SECONDS) {
+            return [
+                'strategy' => 'VWAP_MACD',
+                'state' => 'rejected',
+                'signal_type' => null,
+                'reason' => 'STALE_INTRADAY_DATA: latest closed 5m candle is '.$staleSeconds.' seconds old.',
+                'data_errors' => ['5m' => ['stale_seconds' => $staleSeconds, 'max_stale_seconds' => self::MAX_STALE_SECONDS]],
                 'timeframes' => $timeframes,
             ];
         }
@@ -198,6 +218,7 @@ class CryptoIntradayAnalyzerService
             'volume_confirmed' => $rvol['rvol'] >= self::MIN_RVOL,
             'atr_14' => $this->atr($candles, 14),
             'rsi' => $this->rsi($candles, 14),
+            'stochastic_k' => $this->stochasticK($candles, 14),
             'session_high' => $this->sessionHigh($candles),
             'candles' => $candles,
         ];
@@ -223,11 +244,11 @@ class CryptoIntradayAnalyzerService
         $netPct = (($target1 - $entry - $cost) / $entry) * 100;
         $rr1 = ($target1 - $entry - $cost) / ($risk + $cost);
         $rr2 = ($target2 - $entry - $cost) / ($risk + $cost);
-        $reject = null;
-        if (($x['rsi'] ?? 0) >= 75) $reject = 'OVEREXTENDED_RSI';
-        elseif ($atr > 0 && (($entry - $x['vwap']) / $atr) > 3.0) $reject = 'OVEREXTENDED_FROM_VWAP';
-        elseif ($netPct < self::MIN_NET_PROFIT_PCT) $reject = $capped ? 'RESISTANCE_TOO_CLOSE' : 'PROFIT_TOO_SMALL_AFTER_COSTS';
-        elseif ($rr1 < self::MIN_NET_RR) $reject = $capped ? 'RESISTANCE_LIMITS_RISK_REWARD' : 'LOW_NET_RISK_REWARD';
+        $reject = $this->overextensionReason($x, $entry, $high, $atr);
+        if ($reject === null) {
+            if ($netPct < self::MIN_NET_PROFIT_PCT) $reject = $capped ? 'RESISTANCE_TOO_CLOSE' : 'PROFIT_TOO_SMALL_AFTER_COSTS';
+            elseif ($rr1 < self::MIN_NET_RR) $reject = $capped ? 'RESISTANCE_LIMITS_RISK_REWARD' : 'LOW_NET_RISK_REWARD';
+        }
         return [
             'valid' => $reject === null, 'reject_reason' => $reject,
             'entry' => round($entry, 8), 'stop_loss' => round($stop, 8),
@@ -235,6 +256,36 @@ class CryptoIntradayAnalyzerService
             'risk_reward_t1' => round($rr1, 2), 'risk_reward_t2' => round($rr2, 2),
             'net_profit_pct_t1' => round($netPct, 2), 'target_1_capped_at_session_high' => $capped,
         ];
+    }
+
+    private function overextensionReason(array $x, float $entry, float $sessionHigh, float $atr): ?string
+    {
+        $rsi = $x['rsi'] ?? null;
+        $stoch = $x['stochastic_k'] ?? null;
+        $vwap = $x['vwap'] ?? null;
+
+        if ($rsi !== null && $rsi >= self::MAX_ENTRY_RSI) return 'OVEREXTENDED_RSI';
+        if ($vwap !== null && $atr > 0 && (($entry - $vwap) / $atr) > self::MAX_VWAP_EXTENSION_ATR) {
+            return 'OVEREXTENDED_FROM_VWAP';
+        }
+
+        $atHigh = $sessionHigh > 0 && $entry >= $sessionHigh * (1 - self::NEAR_HIGH_PCT / 100);
+        if ($atHigh && $rsi !== null && $rsi >= self::NEAR_HIGH_RSI
+            && $stoch !== null && $stoch >= self::NEAR_HIGH_STOCH) {
+            return 'CHASING_SESSION_HIGH';
+        }
+        return null;
+    }
+
+    private function stochasticK(array $candles, int $period): ?float
+    {
+        if (count($candles) < $period) return null;
+        $window = array_slice($candles, -$period);
+        $highest = max(array_column($window, 'high'));
+        $lowest = min(array_column($window, 'low'));
+        if ($highest <= $lowest) return 50.0;
+        $close = (float) $candles[count($candles) - 1]['close'];
+        return (($close - $lowest) / ($highest - $lowest)) * 100;
     }
 
     private function sessionHigh(array $candles): float
