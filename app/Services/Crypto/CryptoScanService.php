@@ -87,7 +87,7 @@ class CryptoScanService
             foreach ($watchlist->assets as $asset) {
                 try {
                     $candles = [];
-                    foreach (['15m' => '15m', '1h' => '1h', '4h' => '4h'] as $interval => $binanceInterval) {
+                    foreach (['1d' => '1d', '1h' => '1h', '30m' => '30m', '15m' => '15m', '5m' => '5m', '1m' => '1m'] as $interval => $binanceInterval) {
                         $candles[$interval] = $this->getCandles($asset->symbol, $interval, $binanceInterval);
                     }
 
