@@ -304,17 +304,30 @@ class CryptoIntradayAnalyzerService
 
     private function buildHierarchy(array $tf): array
     {
-        $weights = array_column(self::TIMEFRAMES, 'weight');
-        $max = array_sum($weights);
+        // Preserve timeframe keys. array_column(..., 'weight') discards these keys
+        // and causes lookups like $tf[0], $tf[1], which breaks the hierarchy gate.
+        $max = array_sum(array_column(self::TIMEFRAMES, 'weight'));
         $score = 0;
         $details = [];
+
         foreach (self::TIMEFRAMES as $name => $config) {
-            $trend = $tf[$name]['trend'];
-            $contribution = $trend === 'BULLISH' ? $config['weight'] : ($trend === 'BEARISH' ? -$config['weight'] : 0);
+            $trend = $tf[$name]['trend'] ?? 'UNKNOWN';
+            $weight = (int) $config['weight'];
+            $contribution = match ($trend) {
+                'BULLISH' => $weight,
+                'BEARISH' => -$weight,
+                default => 0,
+            };
             $score += $contribution;
-            $details[$name] = ['trend' => $trend, 'weight' => $config['weight'], 'contribution' => $contribution];
+            $details[$name] = [
+                'trend' => $trend,
+                'weight' => $weight,
+                'contribution' => $contribution,
+            ];
         }
+
         $ratio = $score / max(1, $max);
+
         return [
             'score' => $score,
             'max_score' => $max,
