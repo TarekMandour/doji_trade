@@ -25,9 +25,7 @@ class CryptoJsonStorageService
     public function write(string $path, array $data): void
     {
         $disk = Storage::disk(self::DISK);
-        $directory = dirname($path);
-        $disk->makeDirectory($directory);
-
+        $disk->makeDirectory(dirname($path));
         $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
         $temporary = $path . '.tmp-' . bin2hex(random_bytes(5));
 
@@ -37,24 +35,19 @@ class CryptoJsonStorageService
 
         if (!$disk->move($temporary, $path)) {
             $disk->delete($temporary);
-            throw new RuntimeException("Unable to replace JSON file: {$path}");
+            throw new RuntimeException("Unable to atomically replace JSON file: {$path}");
         }
     }
 
-    public function deleteDirectory(string $path): void
+    public function deleteScanFile(string $path): void
     {
-        if ($path !== '' && str_starts_with($path, 'crypto/scans/')) {
-            Storage::disk(self::DISK)->deleteDirectory($path);
+        if (str_starts_with($path, 'crypto/scans/') && str_ends_with($path, '.json')) {
+            Storage::disk(self::DISK)->delete($path);
         }
     }
 
-    public function candlePath(string $symbol, string $interval, string $date): string
+    public function scanFilePath(string $timestamp, int $sequence): string
     {
-        return sprintf('crypto/candles/%s/%s/%s.json', strtoupper($symbol), $interval, $date);
-    }
-
-    public function scanDirectory(string $uuid): string
-    {
-        return 'crypto/scans/' . $uuid;
+        return sprintf('crypto/scans/%s_%d.json', $timestamp, $sequence);
     }
 }

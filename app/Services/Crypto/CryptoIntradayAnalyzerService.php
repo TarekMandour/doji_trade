@@ -99,13 +99,13 @@ class CryptoIntradayAnalyzerService
         // Crypto supports 1m entries as requested; test the faster entry frames first.
         foreach (['1m', '5m', '15m'] as $interval) {
             $x = $timeframes[$interval];
+            // Keep the entry gate identical to the original four-condition VWAP_MACD strategy.
+            // Trend hierarchy remains diagnostic only; it must not silently veto a valid signal.
             $conditions = [
                 'price_above_vwap' => $x['last_close'] > $x['vwap'],
                 'macd_above_signal' => $x['macd'] > $x['macd_signal'],
                 'histogram_positive' => $x['macd_histogram'] > 0,
                 'volume_confirmed' => $x['volume_confirmed'],
-                'timeframe_trend_support' => in_array($x['trend'], ['BULLISH', 'NEUTRAL'], true),
-                'higher_timeframe_context' => $higherContext,
             ];
             $passed = count(array_filter($conditions)) ;
             if ($nearMiss === null || $passed > $nearMiss['passed']) {
@@ -160,10 +160,10 @@ class CryptoIntradayAnalyzerService
             'stop_loss' => $trade['stop_loss'],
             'target_1' => $trade['target_1'],
             'target_2' => $trade['target_2'],
-            'opportunity_score' => 85,
+            'opportunity_score' => min(95, max(50, (int) round(65 + min(6, $trade['risk_reward_t1']) * 5))),
             'risk_score' => min(100, max(1, (int) round((($trade['entry'] - $trade['stop_loss']) / $trade['entry']) * 1000))),
-            'confidence_score' => 85,
-            'reason' => 'Price above Session VWAP + MACD above Signal + positive Histogram + volume confirmation on '.$selected['timeframe'].'.',
+            'confidence_score' => min(95, max(60, (int) round(65 + min(6, max(0, $timeframes[$selected['timeframe']]['relative_volume'] - 1.0)) * 5))),
+            'reason' => 'Original VWAP_MACD strategy passed all four conditions on '.$selected['timeframe'].': price above Session VWAP, MACD above Signal, positive Histogram, and relative volume >= '.self::MIN_RVOL.'.',
             'market' => [
                 'last_price' => $trade['entry'],
                 'entry_timeframe' => $selected['timeframe'],
@@ -227,7 +227,6 @@ class CryptoIntradayAnalyzerService
             'rsi' => $this->rsi($candles, 14),
             'stochastic_k' => $this->stochasticK($candles, 14),
             'session_high' => $this->sessionHigh($candles),
-            'candles' => $candles,
         ];
     }
 
