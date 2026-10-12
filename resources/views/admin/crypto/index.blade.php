@@ -4,7 +4,7 @@
 <div class="toolbar mb-5 mb-lg-7">
     <div class="page-title d-flex flex-column me-3">
         <h1 class="text-gray-900 fw-bold my-1 fs-3">Crypto Spot Analysis</h1>
-        <div class="text-muted fs-7 mt-2">Binance Spot · 1h / 4h / 1d · Trade-based 24-hour Volume Profile</div>
+        <div class="text-muted fs-7 mt-2">Binance Spot · Selected Watchlist Only · Session VWAP + MACD + Volume · One JSON file per scan</div>
     </div>
 </div>
 @endsection
