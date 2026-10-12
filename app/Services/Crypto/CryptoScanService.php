@@ -175,38 +175,49 @@ class CryptoScanService
 
     private function get24HourTrades(string $symbol, int $fromMs, int $toMs): array
     {
-        $first = $this->binance->getAggregateTrades($symbol, null, $fromMs, $toMs, 1000);
-        if (!$first) {
+        // Binance aggTrades returns at most 1,000 rows per request. Split busy time
+        // windows recursively instead of walking a fixed number of ID pages.
+        $trades = $this->fetchTradeWindow($symbol, $fromMs, $toMs, 0);
+
+        if (!$trades) {
             throw new RuntimeException("No aggregate trades returned for {$symbol}.");
         }
 
-        $trades = $first;
-        $last = end($first);
-        $lastId = (int) $last['a'];
-        $lastTime = (int) $last['T'];
-        $pages = 1;
-        $complete = count($first) < 1000 || $lastTime >= $toMs;
-
-        while (!$complete && $lastTime < $toMs && $pages < 100) {
-            $next = $this->binance->getAggregateTrades($symbol, $lastId + 1, null, null, 1000);
-            if (!$next) {
-                // No later aggregate trades exist for this symbol at the time of the query.
-                $complete = true;
-                break;
+        // Deduplicate by aggregate trade ID in case an exchange boundary is repeated.
+        $unique = [];
+        foreach ($trades as $trade) {
+            if (isset($trade['a'], $trade['T']) && (int) $trade['T'] >= $fromMs && (int) $trade['T'] <= $toMs) {
+                $unique[(string) $trade['a']] = $trade;
             }
-
-            $trades = array_merge($trades, $next);
-            $last = end($next);
-            $lastId = (int) $last['a'];
-            $lastTime = (int) $last['T'];
-            $pages++;
-            $complete = count($next) < 1000 || $lastTime >= $toMs;
         }
 
-        if (!$complete) {
-            throw new RuntimeException("Trade pagination limit reached; 24-hour profile is incomplete for {$symbol}.");
+        if (!$unique) {
+            throw new RuntimeException("No aggregate trades in the requested 24-hour window for {$symbol}.");
         }
 
-        return ['trades' => $trades, 'complete' => true];
+        return ['trades' => array_values($unique), 'complete' => true];
+    }
+
+    /**
+     * Fetch every aggregate trade in a time window. A full 1,000-row response
+     * may be truncated, so divide that window until each segment fits in one page.
+     */
+    private function fetchTradeWindow(string $symbol, int $fromMs, int $toMs, int $depth): array
+    {
+        $rows = $this->binance->getAggregateTrades($symbol, null, $fromMs, $toMs, 1000);
+
+        if (count($rows) < 1000) {
+            return $rows;
+        }
+
+        if ($depth >= 24 || $fromMs >= $toMs) {
+            throw new RuntimeException("Could not safely partition Binance aggregate trades for {$symbol}; retry the scan later.");
+        }
+
+        $middle = intdiv($fromMs + $toMs, 2);
+        $left = $this->fetchTradeWindow($symbol, $fromMs, $middle, $depth + 1);
+        $right = $this->fetchTradeWindow($symbol, $middle + 1, $toMs, $depth + 1);
+
+        return array_merge($left, $right);
     }
 }
