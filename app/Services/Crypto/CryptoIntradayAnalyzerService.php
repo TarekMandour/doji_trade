@@ -123,32 +123,36 @@ class CryptoIntradayAnalyzerService
             ];
         }
 
-        $entry = $latest5m;
-        $recent = array_slice($timeframes['5m']['candles'], -20);
-        $swingLow = min(array_column($recent, 'low'));
-        $atr = max($timeframes[$selected['timeframe']]['atr_14'], $timeframes['1d']['atr_14'] * 0.25, $entry * 0.003);
-        $stop = min($swingLow, $entry - ($atr * 1.2));
-        if ($stop <= 0 || $stop >= $entry) {
-            $stop = $entry - ($entry * 0.005);
+        $trade = $this->buildTradePlan($selected, $timeframes);
+        if (!$trade['valid']) {
+            return $base + [
+                'state' => 'rejected',
+                'signal_type' => null,
+                'reason' => 'Trade plan rejected: '.$trade['reject_reason'].'.',
+                'market' => ['last_price' => $latest5m, 'entry_timeframe' => $selected['timeframe'], 'trade_plan' => $trade],
+            ];
         }
-        $risk = $entry - $stop;
 
         return $base + [
             'state' => 'accepted',
             'signal_type' => 'VWAP_MACD',
-            'entry_price' => $entry,
-            'stop_loss' => $stop,
-            'target_1' => $entry + ($risk * 2.0),
-            'target_2' => $entry + ($risk * 3.0),
+            'entry_price' => $trade['entry'],
+            'stop_loss' => $trade['stop_loss'],
+            'target_1' => $trade['target_1'],
+            'target_2' => $trade['target_2'],
             'opportunity_score' => 85,
-            'risk_score' => min(100, max(1, (int) round(($risk / $entry) * 1000))),
+            'risk_score' => min(100, max(1, (int) round((($trade['entry'] - $trade['stop_loss']) / $trade['entry']) * 1000))),
             'confidence_score' => 85,
             'reason' => 'Price above Session VWAP + MACD above Signal + positive Histogram + volume confirmation on '.$selected['timeframe'].'.',
             'market' => [
-                'last_price' => $entry,
+                'last_price' => $trade['entry'],
                 'entry_timeframe' => $selected['timeframe'],
                 'entry_conditions' => $selected['conditions'],
                 'session_vwap_utc' => $timeframes[$selected['timeframe']]['vwap'],
+                'risk_reward_t1' => $trade['risk_reward_t1'],
+                'risk_reward_t2' => $trade['risk_reward_t2'],
+                'net_profit_pct_t1' => $trade['net_profit_pct_t1'],
+                'target_1_capped_at_session_high' => $trade['target_1_capped_at_session_high'],
             ],
         ];
     }
