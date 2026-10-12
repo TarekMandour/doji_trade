@@ -96,8 +96,8 @@ class CryptoIntradayAnalyzerService
         $nearMiss = null;
         $selected = null;
 
-        // Mirrors the original service order: 15m first, then 5m.
-        foreach (['15m', '5m'] as $interval) {
+        // Crypto supports 1m entries as requested; test the faster entry frames first.
+        foreach (['1m', '5m', '15m'] as $interval) {
             $x = $timeframes[$interval];
             $conditions = [
                 'price_above_vwap' => $x['last_close'] > $x['vwap'],
@@ -124,7 +124,7 @@ class CryptoIntradayAnalyzerService
             'timeframes' => $timeframes,
             'hierarchy' => $hierarchy,
             'diagnostics' => [
-                'tested_entry_timeframes' => ['15m', '5m'],
+                'tested_entry_timeframes' => ['1m', '5m', '15m'],
                 'near_miss' => $nearMiss,
                 'higher_timeframe_context' => $higherContext,
             ],
@@ -188,14 +188,21 @@ class CryptoIntradayAnalyzerService
         $slope20 = $ema20[$last] - $ema20[max(0, $last - 5)];
         $structure = $this->simpleStructure($candles);
 
+        // Keep trend scoring identical to IntradayMultiTimeframeService::determineTrend().
         $trendScore = 0;
-        $trendScore += $candles[$last]['close'] > $ema20[$last] ? 2 : -2;
-        $trendScore += $ema20[$last] > $ema50[$last] ? 2 : -2;
+        if ($ema20[$last] !== null && $candles[$last]['close'] > $ema20[$last]) {
+            $trendScore += 2;
+        } elseif ($ema20[$last] !== null) {
+            $trendScore -= 2;
+        }
+        if ($ema20[$last] !== null && $ema50[$last] !== null) {
+            $trendScore += $ema20[$last] > $ema50[$last] ? 2 : -2;
+        }
         $trendScore += $slope20 > 0 ? 1 : ($slope20 < 0 ? -1 : 0);
-        $trendScore += min(2, $structure['higher_highs']);
-        $trendScore += min(2, $structure['higher_lows']);
-        $trendScore -= min(2, $structure['lower_highs']);
-        $trendScore -= min(2, $structure['lower_lows']);
+        $trendScore += min(2, $structure['higher_highs'] ?? 0);
+        $trendScore += min(2, $structure['higher_lows'] ?? 0);
+        $trendScore -= min(2, $structure['lower_highs'] ?? 0);
+        $trendScore -= min(2, $structure['lower_lows'] ?? 0);
         $trend = $trendScore >= 3 ? 'BULLISH' : ($trendScore <= -3 ? 'BEARISH' : 'NEUTRAL');
 
         return [
@@ -227,7 +234,9 @@ class CryptoIntradayAnalyzerService
     private function buildTradePlan(array $signal, array $tf): array
     {
         $x = $tf[$signal['timeframe']];
-        $entry = (float) $tf['5m']['last_close'];
+        // Use the close of the signal timeframe; prefer the freshest closed candle
+        // available for the actual entry reference to avoid mixing an older 15m close.
+        $entry = (float) ($tf['1m']['last_close'] ?? $tf['5m']['last_close'] ?? $x['last_close']);
         if ($entry <= 0) return ['valid' => false, 'reject_reason' => 'INVALID_PRICE'];
         $atr = max((float) $x['atr_14'], (float) $tf['1d']['atr_14'] * 0.25, $entry * 0.003);
         $stop = $entry - (1.2 * $atr);
