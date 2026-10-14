@@ -74,10 +74,18 @@ class CryptoController extends Controller
         $run = CryptoScanRun::with(['watchlist', 'results.asset'])->where('uuid', $uuid)->firstOrFail();
         $json = $run->results_path ? $storage->read($run->results_path) : null;
 
+        $allResults = $run->results()->with('asset')
+            ->orderByRaw("CASE state WHEN 'accepted' THEN 0 WHEN 'rejected' THEN 1 ELSE 2 END")
+            ->orderByDesc('opportunity_score')
+            ->get();
+        $acceptedResults = $allResults->where('state', 'accepted')->values();
+
         return view('admin.crypto.show', [
             'run' => $run,
-            'results' => $run->results()->with('asset')->orderByRaw("CASE state WHEN 'accepted' THEN 0 WHEN 'rejected' THEN 1 ELSE 2 END")
-                ->orderByDesc('opportunity_score')->get(),
+            // Once a confirmed entry exists, show only that coin. If none exists,
+            // keep the rejected/error rows visible so the scan remains diagnosable.
+            'results' => $acceptedResults->isNotEmpty() ? $acceptedResults : $allResults,
+            'hasConfirmedEntry' => $acceptedResults->isNotEmpty(),
             'jsonResults' => $json['results'] ?? [],
         ]);
     }
