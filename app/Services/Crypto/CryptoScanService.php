@@ -166,6 +166,12 @@ class CryptoScanService
                 $document['run']['rejected_assets'] = $rejected;
                 $document['run']['updated_at'] = now()->toIso8601String();
                 $this->storage->write($filePath, $document);
+
+                // Stop immediately after the first fully accepted entry, once its
+                // candles and result have been persisted to both JSON and database.
+                if (($result['state'] ?? null) === 'accepted') {
+                    break;
+                }
             }
 
             $run->update([
