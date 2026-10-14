@@ -33,6 +33,17 @@
     @endif
     <div class="card">
         <div class="card-header"><h3 class="card-title">Analysis</h3></div>
+        <div class="card-body">
+            @if($hasConfirmedEntry)
+                <div class="alert alert-success mb-5">
+                    Confirmed entry found: showing only the first accepted coin. The scan stopped after this result.
+                </div>
+            @else
+                <div class="alert alert-warning mb-5">
+                    No confirmed entry was found in this scan. The rows below show the rejected pairs and errors for diagnosis.
+                </div>
+            @endif
+        </div>
         <div class="card-body table-responsive">
             <table class="table align-middle table-row-dashed gy-4">
                 <thead>
