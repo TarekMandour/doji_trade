@@ -445,5 +445,6 @@ return [
     'thndr_toggle_failed' => 'تعذر تحديث الحالة',
 
     'data' => 'البيانات',
+    "run_intraday_analysis" => "تشغيل التحليل اللحظي"
 
 ];

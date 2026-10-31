@@ -445,5 +445,6 @@ return [
     'thndr_toggle_failed' => 'Failed to update status',
 
     'data' => 'Data',
+    "run_intraday_analysis" => "Run Intraday"
 
 ];

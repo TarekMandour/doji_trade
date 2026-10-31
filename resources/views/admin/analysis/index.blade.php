@@ -28,7 +28,7 @@
             </div>
             <div class="d-flex align-items-center py-2 py-md-1">
                 @can('analysis create')
-                <a href="{{route($route.'.create')}}" class="btn btn-dark fw-bold"><i class="ki-duotone ki-plus fs-2"></i> {{ __('lang.run_analysis') }}</a>
+                <a href="{{route($route.'.create')}}" class="btn btn-dark me-3 fw-bold"><i class="ki-duotone ki-plus fs-2"></i> {{ __('lang.run_analysis') }}</a>
                 <a href="{{route($route.'.intraday')}}" class="btn btn-dark fw-bold"><i class="ki-duotone ki-plus fs-2"></i> {{ __('lang.run_intraday_analysis') }}</a>
                 @endcan
             </div>
