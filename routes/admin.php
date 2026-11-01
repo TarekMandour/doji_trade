@@ -9,6 +9,7 @@ use App\Http\Controllers\Admin\StockController;
 use App\Http\Controllers\Admin\UsersController;
 use App\Http\Controllers\Admin\WatchlistController;
 use App\Http\Controllers\Auth\AdminAuthController;
+use App\Http\Controllers\Admin\IntradayAutoScanController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('setLocale')->group(function () {
@@ -122,6 +123,12 @@ Route::middleware('setLocale')->group(function () {
             Route::get('/intraday', [AnalysisController::class, 'intraday'])->name('intraday')->middleware('permission:analysis create');
             Route::post('/store', [AnalysisController::class, 'store'])->name('store')->middleware('permission:analysis create');
             Route::post('/store-intraday', [AnalysisController::class, 'storeIntraday'])->name('store-intraday')->middleware('permission:analysis create');
+        });
+
+        Route::name('intraday-auto-scan.')->prefix('intraday-auto-scan')->middleware('permission:settings edit')->group(function () {
+            Route::get('/status', [IntradayAutoScanController::class, 'status'])->name('status');
+            Route::post('/start', [IntradayAutoScanController::class, 'start'])->name('start');
+            Route::post('/stop', [IntradayAutoScanController::class, 'stop'])->name('stop');
         });
 
         // ── Crypto Spot Analysis (isolated from EGX analysis) ────────────────

@@ -73,6 +73,8 @@
     </div>
     <!--end::Thndr token control-->
 
+    @include('admin.dashboard.partials.intraday-auto-scan')
+
 </div>{{-- end kt_content --}}
 @endsection
 
@@ -150,5 +152,71 @@
         $("#btn_thndr_start").click(function () { thndrSet.call(this, "start"); });
         $("#btn_thndr_stop").click(function () { thndrSet.call(this, "stop"); });
     });
+</script>
+<script>
+jQuery(function ($) {
+    const statusUrl = @json(route('admin.intraday-auto-scan.status'));
+    const startUrl = @json(route('admin.intraday-auto-scan.start'));
+    const stopUrl = @json(route('admin.intraday-auto-scan.stop'));
+    const csrfToken = @json(csrf_token());
+
+    function renderAutoScan(data) {
+        const enabled = !!data.enabled;
+
+        $('#btn_intraday_auto_start').prop('disabled', enabled);
+        $('#btn_intraday_auto_stop').prop('disabled', !enabled);
+
+        $('#intraday_auto_badge')
+            .toggleClass('badge-light-success', enabled)
+            .toggleClass('badge-light-danger', !enabled)
+            .text(enabled ? 'Running' : 'Stopped');
+
+        $('#intraday_auto_next_watchlist').text(data.nextWatchlist || '—');
+        $('#intraday_auto_next_at').text(data.nextAt || '—');
+    }
+
+    function refreshAutoScan() {
+        $.getJSON(statusUrl)
+            .done(renderAutoScan)
+            .fail(function () {
+                $('#intraday_auto_message').text('Could not retrieve auto-scan status.');
+            });
+    }
+
+    function sendAutoScanAction(action) {
+        const url = action === 'start' ? startUrl : stopUrl;
+        $('#intraday_auto_message').text('Please wait…');
+
+        $.ajax({
+            url: url,
+            method: 'POST',
+            dataType: 'json',
+            data: { _token: csrfToken }
+        }).done(function (data) {
+            renderAutoScan(data);
+            $('#intraday_auto_message').text(
+                action === 'start'
+                    ? 'Automatic scan enabled. The first EGX 30 scan is due immediately.'
+                    : 'Automatic scan disabled. A scan already in progress may finish.'
+            );
+        }).fail(function (xhr) {
+            const message = xhr.responseJSON && xhr.responseJSON.message
+                ? xhr.responseJSON.message
+                : 'Could not change auto-scan state.';
+            $('#intraday_auto_message').text(message);
+        });
+    }
+
+    $('#btn_intraday_auto_start').on('click', function () {
+        sendAutoScanAction('start');
+    });
+
+    $('#btn_intraday_auto_stop').on('click', function () {
+        sendAutoScanAction('stop');
+    });
+
+    refreshAutoScan();
+    setInterval(refreshAutoScan, 15000);
+});
 </script>
 @endsection
