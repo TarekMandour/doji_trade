@@ -75,6 +75,8 @@
 
     @include('admin.dashboard.partials.intraday-auto-scan')
 
+    @include('admin.dashboard.partials.scalping-auto-scan')
+
 </div>{{-- end kt_content --}}
 @endsection
 
@@ -217,6 +219,72 @@ jQuery(function ($) {
 
     refreshAutoScan();
     setInterval(refreshAutoScan, 15000);
+});
+</script>
+<script>
+jQuery(function ($) {
+    const statusUrl = @json(route('admin.scalping-auto-scan.status'));
+    const startUrl = @json(route('admin.scalping-auto-scan.start'));
+    const stopUrl = @json(route('admin.scalping-auto-scan.stop'));
+    const csrfToken = @json(csrf_token());
+
+    function renderScalpingAutoScan(data) {
+        const enabled = !!data.enabled;
+
+        $('#btn_scalping_auto_start').prop('disabled', enabled);
+        $('#btn_scalping_auto_stop').prop('disabled', !enabled);
+
+        $('#scalping_auto_badge')
+            .toggleClass('badge-light-success', enabled)
+            .toggleClass('badge-light-danger', !enabled)
+            .text(enabled ? 'Running' : 'Stopped');
+
+        $('#scalping_auto_next_watchlist').text(data.nextWatchlist || '—');
+        $('#scalping_auto_next_at').text(data.nextAt || '—');
+    }
+
+    function refreshScalpingAutoScan() {
+        $.getJSON(statusUrl)
+            .done(renderScalpingAutoScan)
+            .fail(function () {
+                $('#scalping_auto_message').text('Could not retrieve Scalping auto-scan status.');
+            });
+    }
+
+    function sendScalpingAutoScanAction(action) {
+        const url = action === 'start' ? startUrl : stopUrl;
+        $('#scalping_auto_message').text('Please wait…');
+
+        $.ajax({
+            url: url,
+            method: 'POST',
+            dataType: 'json',
+            data: { _token: csrfToken }
+        }).done(function (data) {
+            renderScalpingAutoScan(data);
+            $('#scalping_auto_message').text(
+                action === 'start'
+                    ? 'Scalping Auto Scan enabled. The first EGX 30 scan is due immediately.'
+                    : 'Scalping Auto Scan disabled. A scan already in progress may finish.'
+            );
+        }).fail(function (xhr) {
+            const message = xhr.responseJSON && xhr.responseJSON.message
+                ? xhr.responseJSON.message
+                : 'Could not change Scalping auto-scan state.';
+            $('#scalping_auto_message').text(message);
+        });
+    }
+
+    $('#btn_scalping_auto_start').on('click', function () {
+        sendScalpingAutoScanAction('start');
+    });
+
+    $('#btn_scalping_auto_stop').on('click', function () {
+        sendScalpingAutoScanAction('stop');
+    });
+
+    refreshScalpingAutoScan();
+    setInterval(refreshScalpingAutoScan, 15000);
 });
 </script>
 @endsection

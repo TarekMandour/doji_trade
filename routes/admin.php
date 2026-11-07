@@ -10,6 +10,8 @@ use App\Http\Controllers\Admin\UsersController;
 use App\Http\Controllers\Admin\WatchlistController;
 use App\Http\Controllers\Auth\AdminAuthController;
 use App\Http\Controllers\Admin\IntradayAutoScanController;
+use App\Http\Controllers\Admin\CryptoSwingSyncController;
+use App\Http\Controllers\Admin\ScalpingAutoScanController;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware('setLocale')->group(function () {
@@ -123,12 +125,20 @@ Route::middleware('setLocale')->group(function () {
             Route::get('/intraday', [AnalysisController::class, 'intraday'])->name('intraday')->middleware('permission:analysis create');
             Route::post('/store', [AnalysisController::class, 'store'])->name('store')->middleware('permission:analysis create');
             Route::post('/store-intraday', [AnalysisController::class, 'storeIntraday'])->name('store-intraday')->middleware('permission:analysis create');
+            Route::get('/scalping', [AnalysisController::class, 'scalping'])->name('scalping')->middleware('permission:analysis create');
+            Route::post('/store-scalping', [AnalysisController::class, 'storeScalping'])->name('store-scalping')->middleware('permission:analysis create');
         });
 
         Route::name('intraday-auto-scan.')->prefix('intraday-auto-scan')->middleware('permission:settings edit')->group(function () {
             Route::get('/status', [IntradayAutoScanController::class, 'status'])->name('status');
             Route::post('/start', [IntradayAutoScanController::class, 'start'])->name('start');
             Route::post('/stop', [IntradayAutoScanController::class, 'stop'])->name('stop');
+        });
+
+        Route::name('scalping-auto-scan.')->prefix('scalping-auto-scan')->middleware('permission:settings edit')->group(function () {
+            Route::get('/status', [ScalpingAutoScanController::class, 'status'])->name('status');
+            Route::post('/start', [ScalpingAutoScanController::class, 'start'])->name('start');
+            Route::post('/stop', [ScalpingAutoScanController::class, 'stop'])->name('stop');
         });
 
         // ── Crypto Spot Analysis (isolated from EGX analysis) ────────────────
@@ -138,6 +148,8 @@ Route::middleware('setLocale')->group(function () {
             Route::post('/watchlists', [\App\Http\Controllers\Admin\CryptoController::class, 'storeWatchlist'])->name('watchlists.store');
             Route::post('/watchlists/{id}/scan', [\App\Http\Controllers\Admin\CryptoController::class, 'run'])->name('run');
             Route::get('/scans/{uuid}', [\App\Http\Controllers\Admin\CryptoController::class, 'show'])->name('show');
+            Route::post('/swing-sync', [CryptoSwingSyncController::class, 'start'])->name('swing-sync.start');
+            Route::get('/swing-sync/{id}', [CryptoSwingSyncController::class, 'status'])->name('swing-sync.status');
             Route::delete('/scans/{uuid}', [\App\Http\Controllers\Admin\CryptoController::class, 'destroy'])->name('destroy');
         });
 

@@ -28,9 +28,8 @@ return Application::configure(basePath: dirname(__DIR__))
         }
     )
     ->withSchedule(function (Schedule $schedule): void {
-        $schedule->command('intraday:auto-scan')
-            ->everyMinute()
-            ->withoutOverlapping();
+        $schedule->command('intraday:auto-scan')->everyMinute()->withoutOverlapping();
+        $schedule->command('scalping:auto-scan')->everyMinute()->withoutOverlapping();
     })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([

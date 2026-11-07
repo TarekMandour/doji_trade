@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\AnalysisRequest;
 use App\Models\Analysis;
 use App\Models\Watchlist;
+use App\Services\Thndr\EmaBreakoutScalpingService;
 use App\Services\Thndr\IntradayMultiTimeframeService;
 use App\Services\Thndr\StockAnalysisService;
 use Illuminate\Http\Request;
@@ -149,5 +150,64 @@ class AnalysisController extends Controller
         }
 
         return response()->json(['message' => 'success']);
+    }
+
+    public function scalping()
+    {
+        $watchlists = Watchlist::withCount('stocks')->orderBy('name')->get();
+
+        return view($this->viewPath.'.scalping', compact('watchlists'));
+    }
+
+    public function storeScalping(Request $request, EmaBreakoutScalpingService $service)
+    {
+        $data = $request->validate([
+            'title' => 'nullable|string|max:255',
+            'watchlist_id' => 'required|exists:watchlists,id',
+        ]);
+
+        $watchlist = Watchlist::with('stocks')->findOrFail($data['watchlist_id']);
+
+        $assetIds = $watchlist->stocks
+            ->pluck('asset_id')
+            ->filter()
+            ->map(fn ($id) => (string) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($assetIds === []) {
+            return back()
+                ->withInput()
+                ->withErrors(['watchlist_id' => 'The selected watchlist has no stocks with Thndr asset IDs.']);
+        }
+
+        $results = $service->analyzeAssetIds($assetIds);
+
+        // Same persistence pattern as Intraday: JSON file + Analysis database row.
+        $filePath = 'analysis/'.now()->format('Ymd_His').'_'.$watchlist->id.'_scalping.json';
+
+        Storage::disk('local')->put(
+            $filePath,
+            json_encode(
+                $results,
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+            )
+        );
+
+        $title = $data['title'] ?: $watchlist->name.' - EMA Breakout Scalping';
+
+        $analysis = $this->objectModel::create([
+            'title' => $title,
+            'type' => 'scalping',
+            'watchlist_id' => $watchlist->id,
+            'analysis_date' => now()->toDateString(),
+            'file_path' => $filePath,
+            'stocks_count' => count($results),
+        ]);
+
+        return redirect(route($this->route.'.show', $analysis->id))
+            ->with('message', __('lang.add_success'))
+            ->with('status', 'success');
     }
 }
