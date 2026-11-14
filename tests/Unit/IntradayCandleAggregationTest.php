@@ -1,11 +1,11 @@
 <?php
 
-namespace Tests\\Unit;
+namespace Tests\Unit;
 
-use App\\Services\\Thndr\\IntradayMultiTimeframeService;
-use App\\Services\\Thndr\\ThndrApi;
-use Carbon\\Carbon;
-use PHPUnit\\Framework\\TestCase;
+use App\Services\Thndr\IntradayMultiTimeframeService;
+use App\Services\Thndr\ThndrApi;
+use Carbon\Carbon;
+use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
 
 class IntradayCandleAggregationTest extends TestCase
