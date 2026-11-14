@@ -108,6 +108,8 @@ class IntradayMultiTimeframeService
 
     /** EGX local time. Fixed on purpose: app.timezone may be UTC, which breaks the session cutoff and VWAP session reset. */
     private const MARKET_TZ = 'Africa/Cairo';
+    /** Continuous EGX trading session starts at 10:00 Cairo time. */
+    private const SESSION_OPEN = '10:00';
 
     /** Entry timeframes (1m is analysed but is too noisy to be used for entries). */
     private const ENTRY_TIMEFRAMES = ['15m', '5m'];
@@ -425,42 +427,90 @@ class IntradayMultiTimeframeService
             return $candles;
         }
 
-        $interval = $bars * 300;
+        $intervalMinutes = $bars * 5;
+        $intervalSeconds = $intervalMinutes * 60;
         $now = time();
         $groups = [];
 
-        foreach ($candles as $c) {
-            $ts = (int) ($c['timestamp'] ?? $c['time'] ?? 0);
+        foreach ($candles as $candle) {
+            $timestamp = (int) ($candle['timestamp'] ?? $candle['time'] ?? 0);
 
-            if ($ts > 0) {
-                $groups[intdiv($ts, $interval) * $interval][] = $c;
+            if ($timestamp <= 0) {
+                continue;
             }
+
+            // All bucket boundaries are anchored to the EGX session open in Cairo,
+            // not to Unix/UTC epoch boundaries.
+            $localTime = Carbon::createFromTimestampUTC($timestamp)->setTimezone(self::MARKET_TZ);
+            $sessionDate = $localTime->toDateString();
+            $sessionOpen = Carbon::createFromFormat(
+                'Y-m-d H:i',
+                $sessionDate.' '.self::SESSION_OPEN,
+                self::MARKET_TZ
+            );
+
+            if (! $sessionOpen || $localTime->lt($sessionOpen)) {
+                continue;
+            }
+
+            $minutesFromOpen = $sessionOpen->diffInMinutes($localTime);
+            $bucketIndex = intdiv($minutesFromOpen, $intervalMinutes);
+            $bucketStart = $sessionOpen->copy()->addMinutes($bucketIndex * $intervalMinutes);
+            $bucketTimestamp = $bucketStart->timestamp;
+
+            $groups[$bucketTimestamp][] = $candle;
         }
 
         ksort($groups);
 
-        $out = [];
+        $aggregated = [];
 
-        foreach ($groups as $bucket => $group) {
-            // Skip only the bucket that is still forming. A bucket with fewer than
-            // $bars candles is valid: a missing 5m bar means no trades happened.
-            if ($bucket + $interval > $now) {
+        foreach ($groups as $bucketTimestamp => $group) {
+            // Never publish a timeframe candle until its full time window has elapsed.
+            if (($bucketTimestamp + $intervalSeconds) > $now) {
                 continue;
             }
 
-            usort($group, fn (array $a, array $b): int => $a['timestamp'] <=> $b['timestamp']);
+            usort(
+                $group,
+                fn (array $a, array $b): int => (int) $a['timestamp'] <=> (int) $b['timestamp']
+            );
 
-            $out[] = [
-                'timestamp' => (int) $bucket,
-                'open' => (float) $group[0]['open'],
+            // A 15m candle requires exactly 3 consecutive 5m candles.
+            // A 30m candle requires exactly 6 consecutive 5m candles.
+            if (count($group) !== $bars) {
+                continue;
+            }
+
+            $complete = true;
+
+            foreach ($group as $index => $sourceCandle) {
+                $expectedTimestamp = (int) $bucketTimestamp + ($index * 300);
+
+                if ((int) ($sourceCandle['timestamp'] ?? 0) !== $expectedTimestamp) {
+                    $complete = false;
+                    break;
+                }
+            }
+
+            if (! $complete) {
+                continue;
+            }
+
+            $first = $group[0];
+            $last = $group[$bars - 1];
+
+            $aggregated[] = [
+                'timestamp' => (int) $bucketTimestamp,
+                'open' => (float) $first['open'],
                 'high' => (float) max(array_column($group, 'high')),
                 'low' => (float) min(array_column($group, 'low')),
-                'close' => (float) end($group)['close'],
+                'close' => (float) $last['close'],
                 'volume' => (float) array_sum(array_column($group, 'volume')),
             ];
         }
 
-        return $out;
+        return $aggregated;
     }
 
     /**
