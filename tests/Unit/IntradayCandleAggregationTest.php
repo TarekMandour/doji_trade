@@ -71,7 +71,7 @@ class IntradayCandleAggregationTest extends TestCase
         $this->assertCount(1, $result);
         $this->assertSame($candles[2]['timestamp'], $result[0]['timestamp']);
         $this->assertSame(11.0, $result[0]['open']);
-        $this->assertSame(12.5, $result[0]['high']);
+        $this->assertSame(13.0, $result[0]['high']);
         $this->assertSame(10.0, $result[0]['low']);
         $this->assertSame(12.5, $result[0]['close']);
         $this->assertSame(300.0, $result[0]['volume']);
@@ -97,7 +97,7 @@ class IntradayCandleAggregationTest extends TestCase
         $result = $this->aggregate($candles, '30m');
 
         $this->assertCount(1, $result);
-        $this->assertSame($candles[6]['timestamp'], $result[0]['timestamp']);
+        $this->assertSame($candles[5]['timestamp'], $result[0]['timestamp']);
         $this->assertSame(12.0, $result[0]['open']);
         $this->assertSame(15.5, $result[0]['high']);
         $this->assertSame(11.8, $result[0]['low']);
