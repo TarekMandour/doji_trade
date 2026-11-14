@@ -453,7 +453,7 @@ class IntradayMultiTimeframeService
                 continue;
             }
 
-            $minutesFromOpen = $sessionOpen->diffInMinutes($localTime);
+            $minutesFromOpen = (int) $sessionOpen->diffInMinutes($localTime);
             $bucketIndex = intdiv($minutesFromOpen, $intervalMinutes);
             $bucketStart = $sessionOpen->copy()->addMinutes($bucketIndex * $intervalMinutes);
             $bucketTimestamp = $bucketStart->timestamp;
